@@ -224,6 +224,21 @@ def finish_session(session_id,user,expected_part=None):
     return session
 
 
+def reference_links(references):
+    """One displayed link per source page; retain every distinct section label."""
+    groups={}
+    for ref in references:
+        key=(ref['source_id'],ref['page'])
+        if key not in groups:
+            groups[key]={**{field:ref.get(field) for field in ('source_id','page','title','year','doi')},
+                         'sections':{}}
+        section=' '.join(str(ref.get('section') or '').split())
+        if section:
+            groups[key]['sections'].setdefault(section.casefold(),section)
+    return [{**{key:value for key,value in group.items() if key!='sections'},
+             'section':'; '.join(group['sections'].values())} for group in groups.values()]
+
+
 def public_item(item, feedback=False):
     # Explicit allowlist: do not serialize the snapshot before grading is allowed.
     s=item.snapshot
@@ -238,5 +253,5 @@ def public_item(item, feedback=False):
             'confidence':item.confidence,'answered':item.answered_at is not None,'flagged':item.review_flag}
     if feedback:
         result.update(correct=item.correct,explanation=s['explanation'],learning_point=s['learning_point'],
-                      references=s['references'],is_repeat=item.is_repeat)
+                      references=s['references'],source_links=reference_links(s['references']),is_repeat=item.is_repeat)
     return result

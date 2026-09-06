@@ -64,6 +64,39 @@ class StudyTests(TestCase):
         self.assertTrue(saved.correct)
         self.assertEqual(QuestionProgress.objects.get(user=self.user).right,1)
 
+    def test_feedback_groups_source_links_without_changing_saved_evidence(self):
+        second_page=SourcePage.objects.create(source=self.source,number=2,text=self.page.text)
+        other_source=Source.objects.create(title='Another guideline',kind='guideline',year=2021,
+            sha256='b'*64,original_name='another.pdf',page_count=1,file='another.pdf')
+        other_page=SourcePage.objects.create(source=other_source,number=1,text=self.page.text)
+        self.question.references=[
+            {'page_id':self.page.pk,'section':'Table 3','quote':self.page.text[:50]},
+            {'page_id':self.page.pk,'section':' table  3 ','quote':self.page.text[10:]},
+            {'page_id':self.page.pk,'section':'Section 8.5','quote':self.page.text},
+            {'page_id':second_page.pk,'section':'Section 8.6','quote':self.page.text},
+            {'page_id':other_page.pk,'section':'Table 3','quote':self.page.text},
+        ]
+        self.question.save()
+        s=start_session(self.user,count=1);item=s.items.get()
+        original_snapshot=json.dumps(item.snapshot,sort_keys=True)
+        self.assertNotIn('source_links',public_item(item))
+        save_answer(s.id,self.user,1,item.choice_order.index(2),'sure')
+        item.refresh_from_db()
+        visible=public_item(item,feedback=True)
+        self.assertEqual(len(visible['references']),5)
+        self.assertEqual(len(visible['source_links']),3)
+        self.assertEqual(visible['source_links'][0]['section'],'Table 3; Section 8.5')
+        response=self.client.get(f'/sessions/{s.id}/')
+        self.assertContains(response,f'href="/library/{self.source.pk}/file/#page=1"',count=1)
+        self.assertContains(response,f'href="/library/{self.source.pk}/file/#page=2"',count=1)
+        self.assertContains(response,f'href="/library/{other_source.pk}/file/#page=1"',count=1)
+        finish_session(s.id,self.user)
+        response=self.client.get(f'/sessions/{s.id}/results/')
+        self.assertContains(response,'class="source-reference"',count=3)
+        item.refresh_from_db()
+        self.assertEqual(json.dumps(item.snapshot,sort_keys=True),original_snapshot)
+        self.question.refresh_from_db();self.assertEqual(len(self.question.references),5)
+
     def test_repeated_practice_post_is_idempotent(self):
         s=start_session(self.user,count=1)
         item=s.items.get()
