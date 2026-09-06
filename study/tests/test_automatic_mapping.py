@@ -15,7 +15,7 @@ from study.tests import test_pdf_reading as pdf_fixtures
 from study.models import CoverageSegment, LearningObjective, ApiBudget, ApiCall, GenerationJob
 from study.mapping import mapping_context
 from study.automatic_mapping import (AutomaticObjective, AutomaticMap, AutomaticCheck, AutomaticReview,
-                                     save_checked_inventory, reuse_passage_draft)
+                                     save_checked_inventory, reuse_passage_draft, reusable_review)
 from study.coverage import chapter_segments, coverage_report, plan_targets
 from study.generation import run_job, ask_model, BudgetError, DraftBatch, IncompleteModelResponse
 from study.inventory_recovery import recover_inventory, resume_paid_inventory_review, OUTPUT_GAP
@@ -227,6 +227,87 @@ class AutomaticInventoryTests(TestCase):
         self.assertEqual(ai.call_args_list[3].kwargs['images'],[image])
         refs=LearningObjective.objects.order_by('pk').last().evidence.get().references
         self.assertEqual(refs[0]['visual_evidence'],metadata([image]))
+
+    def completed_partial(self):
+        records, proposal, review, context = self.fixture()
+        ApiCall.objects.create(job=self.job, model='gpt-5.6-sol', purpose='map-review', state='settled',
+                               reserved_nok=1, actual_nok=Decimal('.2'), provider_response_id='saved-check')
+        save_checked_inventory(self.job, records, proposal, review, context, [])
+        self.job.status='complete'; self.job.audit={'verified_source_points': 1}; self.job.save()
+        retry=GenerationJob.objects.create(chapter=self.chapter, requested_by=self.user, kind='map',
+                                            count=1, retry_blocked=True, spend_limit_nok=25)
+        return retry, records, proposal, review, context
+
+    def test_retry_uses_saved_gaps_directly_with_astra_and_requested_original_image(self):
+        retry, records, proposal, review, context = self.completed_partial()
+        # Save a completed check requesting a figure; it was absent from that check.
+        review.image_page_ids=[self.page.pk]
+        save_checked_inventory(self.job, records, proposal, review, context, [])
+        original_id=LearningObjective.objects.get().pk
+        replacement=proposal.model_copy(deep=True); replacement.objectives=replacement.objectives[1:]
+        final=review.model_copy(deep=True); final.complete_inventory=True; final.missing_points=[]
+        final.parts[0].all_teaching_points_covered=True
+        for check in final.checks: check.supported=True; check.qualifications_complete=True
+        image={'page_id':self.page.pk,'pdf_page':1,'source_sha256':self.source.sha256,'image_sha256':'1'*64,
+               'renderer':'test','width':100,'height':200,'data_url':'data:image/png;base64,test'}
+        with patch('study.automatic_mapping.page_image',return_value=image), patch('study.automatic_mapping.validate_images'), patch(
+                'study.mapping.ask_model',side_effect=[replacement,final]) as ai:
+            run_job(retry)
+        self.assertEqual([c.args[2] for c in ai.call_args_list],['map-repair','map-review'])
+        self.assertEqual(ai.call_args_list[0].args[1],'gpt-6-astra')
+        self.assertTrue(all(c.kwargs['images']==[image] for c in ai.call_args_list))
+        self.assertEqual(retry.audit['reused_review_job_id'],str(self.job.pk))
+        self.assertEqual(LearningObjective.objects.count(),2)
+        self.assertTrue(LearningObjective.objects.filter(pk=original_id,active=True).exists())
+        self.assertEqual(CoverageSegment.objects.get().status,'mapped')
+
+    def test_retry_budget_stop_keeps_prior_checked_state_and_review_provenance(self):
+        retry, records, proposal, review, context = self.completed_partial()
+        old=copy.deepcopy(records[0].audit)
+        with patch('study.mapping.ask_model',side_effect=BudgetError('cap')) as ai:
+            run_job(retry)
+        self.assertEqual(ai.call_args.args[2],'map-repair')
+        record=CoverageSegment.objects.get()
+        self.assertEqual(record.status,'partial')
+        self.assertEqual(record.audit['review_checkpoint'],old['review_checkpoint'])
+        self.assertEqual(record.audit['job_id'],str(self.job.pk))
+        self.assertEqual(retry.audit['verified_source_points'],1)
+        self.assertEqual(retry.audit['repair_stop'],'budget')
+
+    def test_saved_review_reuse_rejects_changed_proposal_objective_or_uncertain_provenance(self):
+        retry, records, proposal, review, context = self.completed_partial()
+        def reuse(): return reusable_review(retry,records,proposal,context,[],'gpt-5.6-sol')
+        self.assertIsNotNone(reuse())
+        old=copy.deepcopy(records[0].audit)
+        records[0].audit['review']['missing_points']=['Changed after the check']
+        self.assertIsNone(reuse())
+        records[0].audit=old
+        obj=LearningObjective.objects.get(); obj.title='Manually changed clinical scope'; obj.save()
+        self.assertIsNone(reuse())
+        obj.title=proposal.objectives[0].title; obj.save()
+        self.assertIsNotNone(reuse())
+        self.job.calls.update(state='uncertain')
+        self.assertIsNone(reuse())
+
+    def test_old_review_requires_explicit_adoption_and_completed_last_review(self):
+        retry, records, proposal, review, context = self.completed_partial()
+        records[0].audit.pop('review_checkpoint'); records[0].audit.pop('review_call_id')
+        def reuse(): return reusable_review(retry,records,proposal,context,[],'gpt-5.6-sol')
+        self.assertIsNone(reuse())
+        retry.audit={'reuse_review_from':str(self.job.pk)}
+        self.assertIsNotNone(reuse())
+        ApiCall.objects.create(job=self.job,model='gpt-6-astra',purpose='map-repair',state='settled',
+                               reserved_nok=1,actual_nok=Decimal('.2'),provider_response_id='unchecked-repair')
+        self.assertIsNone(reuse())
+
+    def test_cached_review_checks_current_source_and_previous_image_version(self):
+        retry, records, proposal, review, context = self.completed_partial()
+        with patch('study.automatic_mapping.validate_images',side_effect=ValidationError('Changed image')):
+            with self.assertRaises(ValidationError):
+                reusable_review(retry,records,proposal,context,[],'gpt-5.6-sol')
+        self.source.active=False; self.source.save()
+        with self.assertRaises(ValidationError):
+            reusable_review(retry,records,proposal,context,[],'gpt-5.6-sol')
 
     def test_changed_source_and_retired_guideline_cannot_accept_anything(self):
         records,proposal,review,context=self.fixture(complete=True)

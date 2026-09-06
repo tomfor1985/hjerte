@@ -31,6 +31,8 @@ The Studio imports documents, suggests chapters from recognised sections or PDF 
 
 Default allowance is zero. The current authorized pilot is **200 NOK only**. Configure the key and `AI_GENERATION_ENABLED=1` in the active environment. Before every paid request, the app reserves a conservative maximum. Reported token use settles the reservation at configured conversion/tax assumptions. Uncertain calls keep their reservation. Source inventory uses Sol and up to two automatic repair rounds, escalating difficult points to Astra within the same job cap. No uncertain API call is automatically retried and the service tier never silently upgrades. Background responses are polled without creating new paid requests. Interrupted jobs remain stopped for inspection; never reset them to queued without checking `ApiCall` and saved question drafts first.
 
+Retrying a partial inventory can reuse its completed source check and start directly with the recorded gaps. The check, source text, original image versions and saved objectives must still match; edited or unmatched checkpoints get a fresh check. Figure gaps go directly to Astra. Additions are independently checked before use, and a budget stop preserves already verified points. Older single-batch audits require an explicit `reuse_review_from` job reference and the same provenance checks before adoption.
+
 Runtime pricing expires on 2026-11-21 and must be checked again before further generation. Existing practice/exams make no API calls. [Decisions and estimate](docs/DECISIONS.md).
 
 ## Verification

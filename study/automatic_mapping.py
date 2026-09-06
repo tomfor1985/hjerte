@@ -9,10 +9,13 @@ from django.db import transaction
 from .generation import BudgetError, IncompleteModelResponse
 from .mapping import (CitedMap, CitedObjective, ScopedMapReview, ObjectiveCheck, resolve_citations,
                       prompt_context, visible_references, PROMPT_VERSION)
-from .models import LearningObjective, ObjectiveEvidence, SourcePage
+from .models import LearningObjective, ObjectiveEvidence, SourcePage, GenerationJob
 from .pdf_images import page_image, metadata, validate_images, MAX_IMAGES
 
 MAX_REPAIRS = 2
+CHECKPOINT_FIELDS = ('job_id', 'prompt_version', 'context_key', 'current_proposal', 'review',
+                     'accepted_candidates', 'held_candidates', 'visual_evidence', 'segment_ids',
+                     'review_call_id')
 
 
 class AutomaticObjective(CitedObjective):
@@ -40,6 +43,76 @@ class AutomaticReview(ScopedMapReview):
 
 def signature(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+
+
+def checkpoint(audit):
+    return signature({key: audit.get(key) for key in CHECKPOINT_FIELDS})
+
+
+def reusable_review(job, records, proposal, context, images, reviewer):
+    """Reuse a completed source check only while its exact evidence and saved points survive."""
+    from .mapping import validate_context
+    old = records[0].audit
+    if (old.get('job_id') == str(job.pk) or old.get('complete') or
+            old.get('context_key') != signature(context) or old.get('prompt_version') != PROMPT_VERSION or
+            old.get('segment_ids') != [r.pk for r in records] or
+            old.get('current_proposal') != proposal.model_dump() or not old.get('review') or
+            any(checkpoint(r.audit) != checkpoint(old) for r in records)):
+        return None
+    prior = GenerationJob.objects.filter(pk=old['job_id'], status='complete', kind='map',
+                                         chapter_id=job.chapter_id, notes_source_id=job.notes_source_id).first()
+    if not prior or prior.calls.exclude(state='settled').exists():
+        return None
+    if old.get('review_checkpoint'):
+        if old['review_checkpoint'] != checkpoint(old):
+            return None
+        call = prior.calls.filter(pk=old.get('review_call_id'), purpose='map-review', model=reviewer).first()
+    else:
+        # An explicitly selected, pre-checkpoint single-batch run can be adopted
+        # after the same evidence/database checks. Never infer this from a draft.
+        if (job.audit.get('reuse_review_from') != str(prior.pk) or prior.count != 1 or
+                prior.audit.get('verified_source_points') != len(old.get('accepted_candidates', {}))):
+            return None
+        call = prior.calls.order_by('-created_at').first()
+    if not call or call.purpose != 'map-review' or call.model != reviewer or not call.provider_response_id:
+        return None
+    validate_context(job, records, context)
+    validate_images(old.get('visual_evidence', []))
+    if metadata(images) != old.get('visual_evidence', []):
+        return None
+    review = AutomaticReview.model_validate(old['review'])
+    indices = set(range(len(proposal.objectives)))
+    checks = {c.index: c for c in review.checks}
+    part_ids = set(range(len(records)))
+    if (set(checks) != indices or len(checks) != len(review.checks) or
+            {p.part_id for p in review.parts} != part_ids or len(review.parts) != len(records) or
+            {p.part_id for p in proposal.parts} != part_ids or len(proposal.parts) != len(records)):
+        return None
+    resolved, errors = resolve_objectives(proposal, context)
+    accepted = {int(i): pk for i, pk in old.get('accepted_candidates', {}).items()}
+    held = old.get('held_candidates', [])
+    if not accepted or set(accepted) & {h['index'] for h in held} or set(accepted) | {h['index'] for h in held} != indices:
+        return None
+    image_index = {i['page_id']: i for i in metadata(images)}
+    for index, pk in accepted.items():
+        obj, check = proposal.objectives[index], checks[index]
+        visual = set(obj.visual_page_ids) | set(check.visual_page_ids)
+        if (index in errors or not all((check.supported, check.useful_angles, check.correct_source_parts,
+                                       check.qualifications_complete)) or not visual.issubset(image_index) or
+                not set(obj.part_ids).issubset(part_ids) or
+                any(p.disposition == 'nonlearning' for p in proposal.parts if p.part_id in obj.part_ids)):
+            return None
+        refs = [r.model_dump() for r in resolved[index].references]
+        if visual:
+            refs[0]['visual_evidence'] = [image_index[pk] for pk in sorted(visual)]
+        key = signature({'chapter_id': job.chapter_id, 'source_sha256': job.chapter.source.sha256,
+                         'title': obj.title, 'angles': obj.testing_angles, 'references': refs})
+        if not LearningObjective.objects.filter(pk=pk, active=True, merged_into__isnull=True, blocked_reason='',
+                inventory_key=key, title=obj.title, variant_limit=len(obj.testing_angles),
+                depth_reason='\n'.join(obj.testing_angles), evidence__chapter=job.chapter,
+                evidence__references=refs).exists():
+            return None
+    return review, sorted(accepted), held, str(call.pk)
 
 
 def remember(records, **values):
@@ -163,6 +236,9 @@ def save_checked_inventory(job, records, proposal, review, context, images):
              'draft': {'cross_references': [c.model_dump() for c in proposal.cross_references]},
              'reused_draft_job_id': records[0].audit.get('reused_draft_job_id'),
              'reused_draft_version': records[0].audit.get('reused_draft_version')}
+    review_call = job.calls.filter(state='settled', purpose='map-review').order_by('-created_at').first()
+    audit['review_call_id'] = str(review_call.pk) if review_call else None
+    audit['review_checkpoint'] = checkpoint(audit)
     for index, record in enumerate(records):
         previous_audit = record.audit
         history = previous_audit.get('previous_attempts', [])
@@ -255,30 +331,39 @@ def process_group(job, records, context, ask):
                          json.dumps({**prompt_context(context), 'proposed_inventory': draft.model_dump()}, ensure_ascii=False), ScopedMapReview, 12000)
             done = save_map(job, records, draft, review, context)
             return done, len(draft.objectives) if done else 0
+        cached = reusable_review(job, records, proposal, context, images, reviewer) if not resumed else None
         for round_number in range(first_round, MAX_REPAIRS + 1):
-            remember(records, current_proposal=proposal.model_dump(), context_key=context_key,
-                     prompt_version=PROMPT_VERSION, job_id=str(job.pk))
-            # Writer-requested visuals are included in the first independent check.
-            requested = {pk for obj in proposal.objectives for pk in obj.visual_page_ids}
             image_error = ''
-            try:
-                images = load_images(requested, context, images)
-            except (ValidationError, OSError, subprocess.SubprocessError) as error:
-                image_error = 'Original page images unavailable; visual claims must stay unresolved.'
-            body = {**prompt_context(context), 'proposed_inventory': proposal.model_dump(),
-                    'supplied_images': metadata(images), 'image_issue': image_error}
-            review_limit = 24000 if len(proposal.objectives) > 16 else 16000
-            review = ask(job, reviewer, 'map-review', MAP_REVIEW + AUTO_REVIEW,
-                         json.dumps(body, ensure_ascii=False), AutomaticReview, review_limit, **({'images': images} if images else {}))
-            if not isinstance(review, AutomaticReview):
-                raise ValidationError('Automatic inventory requires an item-level source review.')
-            done, accepted, held = save_checked_inventory(job, records, proposal, review, context, images)
-            reviewed = True
-            job.audit = {**job.audit, 'repair_rounds': round_number,
-                         'accepted_objectives': len(accepted), 'held_objectives': len(held)}
-            job.save(update_fields=['audit'])
-            if done or round_number == MAX_REPAIRS or review_only:
-                return done, len(accepted)
+            if cached and round_number == 0:
+                review, accepted, held, call_id = cached
+                reviewed = True
+                job.audit = {**job.audit, 'reused_review_job_id': old['job_id'],
+                             'reused_review_call_id': call_id, 'reused_review_checkpoint': checkpoint(old)}
+                job.save(update_fields=['audit'])
+            else:
+                remember(records, current_proposal=proposal.model_dump(), context_key=context_key,
+                         prompt_version=PROMPT_VERSION, job_id=str(job.pk))
+                # Writer-requested visuals are included in the first independent check.
+                requested = {pk for obj in proposal.objectives for pk in obj.visual_page_ids}
+                image_error = ''
+                try:
+                    images = load_images(requested, context, images)
+                except (ValidationError, OSError, subprocess.SubprocessError) as error:
+                    image_error = 'Original page images unavailable; visual claims must stay unresolved.'
+                body = {**prompt_context(context), 'proposed_inventory': proposal.model_dump(),
+                        'supplied_images': metadata(images), 'image_issue': image_error}
+                review_limit = 24000 if len(proposal.objectives) > 16 else 16000
+                review = ask(job, reviewer, 'map-review', MAP_REVIEW + AUTO_REVIEW,
+                             json.dumps(body, ensure_ascii=False), AutomaticReview, review_limit, **({'images': images} if images else {}))
+                if not isinstance(review, AutomaticReview):
+                    raise ValidationError('Automatic inventory requires an item-level source review.')
+                done, accepted, held = save_checked_inventory(job, records, proposal, review, context, images)
+                reviewed = True
+                job.audit = {**job.audit, 'repair_rounds': round_number,
+                             'accepted_objectives': len(accepted), 'held_objectives': len(held)}
+                job.save(update_fields=['audit'])
+                if done or round_number == MAX_REPAIRS or review_only:
+                    return done, len(accepted)
             # Retain approved candidates, ask only for additions and replacements.
             retained = [proposal.objectives[i] for i in accepted]
             wanted = set(review.image_page_ids) | {pk for c in review.checks for pk in c.visual_page_ids}
