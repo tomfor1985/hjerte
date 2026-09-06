@@ -171,12 +171,12 @@ class PDFCitationTests(TestCase):
         objective=LearningObjective.objects.get()
         objective.reconciliation_status='complete';objective.save()
         self.question.status='retired';self.question.save()
-        original,blind,rationale=CoverageTests.draft_and_reviews(self,objective)
+        original,rationale=CoverageTests.draft_and_reviews(self,objective)
         payload=original.questions[0].model_dump()
         payload['references']=[{'passage_id':context['parts'][0]['passages'][0]['id'],'section':'Example'}]
         batch=CitedQuestionBatch(questions=[CitedQuestion(**payload)])
         self.job.kind='questions'
-        with patch('study.generation.ask_model',side_effect=[batch,blind,rationale]) as ai:run_job(self.job)
+        with patch('study.generation.ask_model',side_effect=[batch,rationale]) as ai:run_job(self.job)
         self.assertEqual(ai.call_args_list[0].args[5],CitedQuestionBatch)
         from study.models import Question
         created=Question.objects.exclude(pk=self.question.pk).get()

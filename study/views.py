@@ -256,6 +256,14 @@ def studio(request):
                     return redirect('source_setup',source_id=source.pk)
                 except (ValidationError,ValueError,UnicodeError) as e:
                     import_form.add_error(None,e)
+        elif request.POST.get('action')=='resume_questions':
+            from .question_resume import queue_saved_questions
+            try:
+                queue_saved_questions(request.POST.get('job_id'),request.user)
+                messages.success(request,'Saved questions queued for automatic checking. No new questions will be written; the original job cap still applies.')
+            except ValidationError as e:
+                messages.error(request,' '.join(e.messages))
+            return redirect('studio')
         elif request.POST.get('action')=='generate':
             generate_form=GenerateForm(request.POST)
             if generate_form.is_valid():

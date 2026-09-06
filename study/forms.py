@@ -57,6 +57,8 @@ class ModelPairForm(forms.Form):
 
 
 class GenerateForm(ModelPairForm):
+    spend_limit_nok = forms.DecimalField(min_value=1,max_value=200,decimal_places=2,required=False,initial=25,
+        label='Maximum job spend (NOK)',help_text='Writing and the normal source check must both fit before a question group starts.')
     strategy = forms.ChoiceField(choices=[('coverage','Increase coverage'),('variants','Add useful variants')],initial='coverage',required=False,
         help_text='Uncovered objectives first. Variants require a distinct testing angle and stop at the objective ceiling.')
     chapter = forms.ModelChoiceField(queryset=Chapter.objects.filter(source__kind='guideline',source__active=True,source__duplicate_of__isnull=True).select_related('source'))
@@ -67,6 +69,8 @@ class GenerateForm(ModelPairForm):
 
     def clean(self):
         data=super().clean()
+        from decimal import Decimal
+        data['spend_limit_nok']=data.get('spend_limit_nok') or Decimal('25')
         data['strategy']=data.get('strategy') or 'coverage'
         chapter,notes=data.get('chapter'),data.get('notes_source')
         if chapter and notes and not notes.supporting_guidelines.filter(pk=chapter.source_id).exists():

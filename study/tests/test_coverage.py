@@ -103,7 +103,7 @@ class CoverageTests(TestCase):
         verdict=Verdict(index=0,best_answer=2,single_best_answer=True,evidence_supports_answer=True,
             reference_section_accurate=True,explanations_accurate=True,within_source_scope=True,notes='Checked')
         novelty=NoveltyVerdict(**verdict.model_dump(),objective_matches=True,adds_distinct_testing_angle=novel)
-        return [DraftBatch(questions=[draft]),ReviewBatch(verdicts=[verdict]),NoveltyReviewBatch(verdicts=[novelty])]
+        return [DraftBatch(questions=[draft]),NoveltyReviewBatch(verdicts=[novelty])]
 
     def test_semantic_duplicate_is_held_even_when_medically_correct(self):
         obj=self.fresh_target()
@@ -111,7 +111,7 @@ class CoverageTests(TestCase):
             run_job(self.job)
         q=Question.objects.exclude(pk=self.question.pk).get()
         self.assertEqual(q.status,'quarantined')
-        self.assertFalse(q.verification['rationale_review']['adds_distinct_testing_angle'])
+        self.assertFalse(q.verification['combined_review']['adds_distinct_testing_angle'])
         self.assertEqual(self.job.published,0)
 
     def test_generation_uses_exact_objective_and_global_question_catalogue(self):
@@ -285,7 +285,7 @@ class CoverageTests(TestCase):
         with override_settings(AI_GENERATOR_MODEL='gpt-6-astra',AI_REVIEWER_MODEL='gpt-5.6-sol'),patch(
                 'study.generation.ask_model',side_effect=self.draft_and_reviews(obj)) as ai:
             run_job(self.job)
-        self.assertEqual([c.args[1] for c in ai.call_args_list],['gpt-5.6-terra','gpt-6-astra','gpt-6-astra'])
+        self.assertEqual([c.args[1] for c in ai.call_args_list],['gpt-5.6-terra','gpt-6-astra'])
         q=Question.objects.exclude(pk=self.question.pk).get()
         self.assertEqual(q.generated_by,'gpt-5.6-terra')
         self.assertEqual(q.verification['reviewer'],'gpt-6-astra')
@@ -294,7 +294,7 @@ class CoverageTests(TestCase):
         self.client.force_login(self.user)
         before=GenerationJob.objects.count()
         response=self.client.get('/studio/coverage/',{'generator_model':'gpt-5.6-terra','reviewer_model':'gpt-6-astra'})
-        self.assertContains(response,'gpt-5.6-terra for questions, gpt-6-astra for blind')
+        self.assertContains(response,'gpt-5.6-terra for questions, gpt-6-astra for combined')
         self.assertEqual(GenerationJob.objects.count(),before)
         response=self.client.get('/studio/coverage/',{'generator_model':'unpriced','reviewer_model':'gpt-5.6-sol'})
         self.assertContains(response,'Select a valid choice')

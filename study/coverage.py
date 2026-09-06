@@ -139,7 +139,7 @@ def cost_forecast(rows, mapping_complete, generator=None, reviewer=None):
     published = question_jobs.aggregate(n=Sum('published'))['n'] or 0
     calls = ApiCall.objects.filter(job__kind='questions')
     measured = calls.filter(state='settled').aggregate(n=Sum('actual_nok'))['n'] or Decimal('0')
-    uncertain = ApiCall.objects.filter(state__in=['reserved', 'uncertain']).aggregate(n=Sum('reserved_nok'))['n'] or Decimal('0')
+    uncertain = ApiCall.objects.filter(state__in=['planned', 'reserved', 'uncertain']).aggregate(n=Sum('reserved_nok'))['n'] or Decimal('0')
     unit = measured / published if published and measured else None
     # Reprice the observed token mix for the configured models. This remains a
     # scenario: another model can use different tokens and have a different yield.
@@ -147,7 +147,7 @@ def cost_forecast(rows, mapping_complete, generator=None, reviewer=None):
     budget=ApiBudget.objects.filter(pk=1).first() or ApiBudget()
     generator=generator or settings.AI_GENERATOR_MODEL
     reviewer=reviewer or settings.AI_REVIEWER_MODEL
-    configured={'generate':generator,'blind-review':reviewer,'rationale-review':reviewer}
+    configured={'generate':generator,'blind-review':reviewer,'rationale-review':reviewer,'question-review':reviewer,'question-extra-review':reviewer}
     settled=list(calls.filter(state='settled'))
     can_reprice=bool(settled and published) and all(c.input_tokens>0 and c.purpose in configured and
         configured[c.purpose] in PRICES for c in settled) and settings.AI_SERVICE_TIER in ('flex','default')

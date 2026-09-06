@@ -10,3 +10,5 @@
 .cost-estimate{margin-top:1.4rem}.cost-estimate>strong{font-size:1.8rem}.objective-row>div{min-width:0;overflow-wrap:anywhere}.objective-row>.badge{flex-shrink:0}.objective-row details{margin-top:.5rem}.coverage-row{flex-wrap:wrap}@media(max-width:760px){.objective-row{align-items:flex-start;flex-direction:column}.coverage-row strong{white-space:normal}}
 
 .format-copy{min-width:0;overflow-wrap:anywhere}.format-copy .source-row>div{min-width:0;max-width:100%}
+
+.job-row>div:first-child{min-width:0;overflow-wrap:anywhere}.job-actions{flex-shrink:0}.job-actions form{margin-top:10px}@media(max-width:760px){.job-row{flex-direction:column;align-items:flex-start}.job-actions{width:100%}.job-actions .button{min-height:48px;max-width:100%}}

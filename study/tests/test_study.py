@@ -369,7 +369,7 @@ class BudgetTests(TestCase):
         self.budget.price_valid_until=timezone.localdate()-timedelta(days=1);self.budget.save()
         with self.assertRaises(BudgetError):reserve_call(self.job,'gpt-6-astra','test',1000,1000)
 
-    def test_generation_requires_blind_and_rationale_agreement_and_keeps_provenance(self):
+    def test_combined_generation_check_rejects_inaccurate_explanations_and_keeps_provenance(self):
         from study.generation import run_job,DraftQuestion,ReviewBatch,Verdict,NoveltyReviewBatch,NoveltyVerdict
         from study.models import LearningObjective,ObjectiveEvidence,CoverageSegment
         from study.coverage import chapter_segments
@@ -386,12 +386,12 @@ class BudgetTests(TestCase):
         good=Verdict(index=0,best_answer=2,single_best_answer=True,evidence_supports_answer=True,
             reference_section_accurate=True,explanations_accurate=True,within_source_scope=True,notes='Supported')
         bad=NoveltyVerdict(**{**good.model_dump(),'explanations_accurate':False},objective_matches=True,adds_distinct_testing_angle=True)
-        with patch('study.generation.ask_model',side_effect=[DraftBatch(questions=[draft]),ReviewBatch(verdicts=[good]),NoveltyReviewBatch(verdicts=[bad])]) as ai:
+        with patch('study.generation.ask_model',side_effect=[DraftBatch(questions=[draft]),NoveltyReviewBatch(verdicts=[bad])]) as ai:
             run_job(self.job)
         q=Question.objects.get(stem=draft.stem)
         self.assertEqual(q.status,'quarantined')
         self.assertEqual(q.verification['provenance']['source_id'],self.source.id)
         self.assertEqual(q.verification['provenance']['sha256'],self.source.sha256)
         blind=json.loads(ai.call_args_list[1].args[4])['questions'][0]
-        self.assertNotIn('answer',blind);self.assertNotIn('explanation',blind)
-        self.assertTrue(all(isinstance(c,str) for c in blind['choices']))
+        self.assertNotIn('answer',blind);self.assertIn('explanation',blind)
+        self.assertTrue(all('text' in c and 'explanation' in c for c in blind['choices']))

@@ -333,7 +333,7 @@ class AutomaticInventoryTests(TestCase):
         self.assertEqual(record.audit['reused_draft_job_id'],'old-paid-job')
         self.assertEqual(record.status,'mapped')
 
-    def test_visual_evidence_reaches_all_three_mcq_checks(self):
+    def test_visual_evidence_reaches_writer_and_combined_mcq_check(self):
         from study.cited_questions import CitedQuestionBatch,CitedQuestion
         records,proposal,review,context=self.fixture(count=1,complete=True)
         image={'page_id':self.page.pk,'pdf_page':1,'data_url':'data:image/png;base64,test',
@@ -343,13 +343,13 @@ class AutomaticInventoryTests(TestCase):
             save_checked_inventory(self.job,records,proposal,review,context,[image])
         obj=LearningObjective.objects.get();obj.reconciliation_status='complete';obj.save()
         self.question.status='retired';self.question.save();self.job.kind='questions'
-        draft,blind,rationale=coverage_fixtures.CoverageTests.draft_and_reviews(self,obj)
+        draft,rationale=coverage_fixtures.CoverageTests.draft_and_reviews(self,obj)
         item=draft.questions[0].model_dump()
         item['references']=[{'passage_id':context['parts'][0]['passages'][0]['id'],'section':'Example'}]
         batch=CitedQuestionBatch(questions=[CitedQuestion(**item)])
-        with patch('study.pdf_images.reference_images',return_value=[image]),patch('study.generation.ask_model',side_effect=[batch,blind,rationale]) as ai:
+        with patch('study.pdf_images.reference_images',return_value=[image]),patch('study.generation.ask_model',side_effect=[batch,rationale]) as ai:
             run_job(self.job)
-        self.assertEqual(ai.call_count,3)
+        self.assertEqual(ai.call_count,2)
         self.assertTrue(all(c.kwargs['images']==[image] for c in ai.call_args_list))
         self.assertEqual(obj.questions.get().status,'published')
         self.assertEqual(obj.questions.get().references[0]['visual_evidence'],metadata([image]))

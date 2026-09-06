@@ -319,6 +319,8 @@ class ApiCall(models.Model):
     reasoning_tokens = models.PositiveIntegerField(null=True,blank=True)
     service_tier = models.CharField(max_length=16,blank=True)
     provider_response_id = models.CharField(max_length=160, blank=True)
+    request_audit = models.JSONField(default=dict, blank=True)
+    result = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
 
