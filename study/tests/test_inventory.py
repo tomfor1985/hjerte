@@ -188,7 +188,7 @@ class InventoryTests(TestCase):
         self.assertEqual(saved.kind,'reconcile');self.assertEqual(saved.spend_limit_nok,Decimal('15'))
         self.assertEqual(saved.reviewer_model,'gpt-5.6-sol')
         form=MappingForm({'chapter':self.chapter.pk,'count':1,'retry_blocked':True,'spend_limit_nok':0})
-        self.assertFalse(form.is_valid());self.assertIn('retry_reason',form.errors);self.assertIn('spend_limit_nok',form.errors)
+        self.assertFalse(form.is_valid());self.assertNotIn('retry_reason',form.errors);self.assertIn('spend_limit_nok',form.errors)
 
 
 @override_settings(AI_GENERATION_ENABLED=True,OPENAI_API_KEY='not-real',AI_SERVICE_TIER='flex')

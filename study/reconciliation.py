@@ -201,12 +201,19 @@ def run_reconciliation_job(job):
         # A complete compact index is used once in this separate stage. Oversized
         # requests fail at reserve_call; the catalogue is never silently truncated.
         cache_context=json.dumps({'catalogue':index},ensure_ascii=False)
-        draft=ask_model(job,job.generator_model or settings.AI_MAPPING_MODEL,job.kind,instructions,json.dumps(body,ensure_ascii=False),MatchProposal,6000,cache_context=cache_context)
+        from .pdf_images import reference_images
+        refs=[r for item in body.get('incoming',[]) for ev in item['evidence'] for r in ev['references']] + [r for q in body.get('questions',[]) for r in q['references']]
+        images=reference_images(refs)
+        image_kwargs={'images':images} if images else {}
+        draft=ask_model(job,job.generator_model or settings.AI_MAPPING_MODEL,job.kind,instructions,json.dumps(body,ensure_ascii=False),MatchProposal,6000,cache_context=cache_context,**image_kwargs)
         selected={i.target_id for i in draft.items if i.target_id is not None}
         checked_ids=selected|({o.pk for o in group} if job.kind=='reconcile' else set())
         details_snapshot=objective_details(checked_ids)
+        refs += [r for item in details_snapshot for ev in item['evidence'] for r in ev['references']]
+        images=reference_images(refs)
+        image_kwargs={'images':images} if images else {}
         review=ask_model(job,job.reviewer_model or settings.AI_REVIEWER_MODEL,job.kind+'-review',review_instructions,
-            json.dumps({**body,'proposal':draft.model_dump(),'target_details':objective_details(selected)},ensure_ascii=False),MatchReview,6000,cache_context=cache_context)
+            json.dumps({**body,'proposal':draft.model_dump(),'target_details':objective_details(selected)},ensure_ascii=False),MatchReview,6000,cache_context=cache_context,**image_kwargs)
         completed+=apply_objective_matches(group,draft,review,index,details_snapshot) if job.kind=='reconcile' else apply_question_links(group,draft,review,index,details_snapshot)
         attempted+=len(group)
         job.audit={**job.audit,'attempted_ids':job.audit.get('attempted_ids',[])+[str(o.pk) for o in group]}

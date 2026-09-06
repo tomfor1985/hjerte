@@ -13,7 +13,7 @@ from .models import LearningObjective, ObjectiveEvidence, CoverageSegment, Sourc
 from .sources import validate_references, normalize
 from .pdf_reading import page_text, reading_for, evidence_part, prompt_part, prepare_source_reading
 
-PROMPT_VERSION = 'inventory-3-passages'
+PROMPT_VERSION = 'inventory-4-automatic'
 
 
 class InventoryReference(Reference):
@@ -156,10 +156,10 @@ def map_segments(job):
 def require_mapped_chapter(chapter):
     segments = chapter_segments(chapter)
     state = mapping_state(segments)
-    if not segments or len({s['page'].number for s in segments}) != chapter.last_page-chapter.first_page+1 or any(
-            state.get((s['page'].pk,s['start'],s['digest'])) is None or
-            state[(s['page'].pk,s['start'],s['digest'])].status != 'mapped' for s in segments):
+    if not any(state.get((s['page'].pk,s['start'],s['digest'])) and
+               state[(s['page'].pk,s['start'],s['digest'])].status in ('mapped','partial') for s in segments):
         raise ValidationError('Map and verify the supporting guideline chapter before mapping its notes.')
+
 
 
 def note_evidence(chapter, group):
@@ -204,8 +204,7 @@ def block_records(records, reason, audit):
         record.save(update_fields=['status','audit'])
 
 
-@transaction.atomic
-def save_map(job, records, draft, review, context):
+def validate_context(job, records, context):
     evidence=context.get('primary_evidence',context['parts'])
     source_ids={job.chapter.source_id,records[0].page.source_id}
     if Source.objects.for_study().filter(pk__in=source_ids).count()!=len(source_ids):
@@ -215,7 +214,6 @@ def save_map(job, records, draft, review, context):
         record.page.refresh_from_db()
         if hashlib.sha256(page_text(record.page)[record.start:record.end].encode()).hexdigest()!=record.digest:
             raise ValidationError('Source text changed during mapping.')
-    visible_references([r.model_dump() for o in draft.objectives for r in o.references],evidence) if draft.objectives else None
     for p in evidence:
         from .models import SourcePage
         current=SourcePage.objects.get(pk=p['page_id'])
@@ -223,6 +221,13 @@ def save_map(job, records, draft, review, context):
         if (p.get('reading_sha256')!=(reading.text_sha256 if reading else None) or p['text']!=page_text(current)[p['start']:p['end']] or
                 p['passages']!=evidence_part(current,p['start'],p['end'])['passages']):
             raise ValidationError('Primary evidence changed during mapping.')
+
+
+@transaction.atomic
+def save_map(job, records, draft, review, context):
+    validate_context(job, records, context)
+    evidence=context.get('primary_evidence',context['parts'])
+    visible_references([r.model_dump() for o in draft.objectives for r in o.references],evidence) if draft.objectives else None
     ids=set(range(len(records)))
     parts={p.part_id:p for p in draft.parts};checks={p.part_id:p for p in review.parts}
     objectives={c.index:c for c in review.checks}
@@ -284,7 +289,7 @@ def run_mapping_job(job):
     states=mapping_state(segments)
     pending=[s for s in segments if (s['page'].pk,s['start'],s['digest']) not in states or
         states[(s['page'].pk,s['start'],s['digest'])].status=='pending' or
-        (job.retry_blocked and states[(s['page'].pk,s['start'],s['digest'])].status=='blocked')]
+        (job.retry_blocked and states[(s['page'].pk,s['start'],s['digest'])].status in ('blocked','partial'))]
     groups=list(pack_segments(pending));completed=blocked=0
     for group in groups[:job.count]:
         records=[CoverageSegment.objects.get_or_create(page=s['page'],start=s['start'],digest=s['digest'],defaults={'end':s['end']})[0] for s in group]
@@ -292,38 +297,12 @@ def run_mapping_job(job):
             block_records(records,'No extractable text. Check the original file or OCR.',{'prompt_version':PROMPT_VERSION})
             blocked+=len(records);continue
         context=mapping_context(job,group)
-        writer=job.generator_model or settings.AI_MAPPING_MODEL
-        context_key=hashlib.sha256(json.dumps(context,sort_keys=True,ensure_ascii=False).encode()).hexdigest()
-        draft_audit={'job_id':str(job.pk),'prompt_version':PROMPT_VERSION}
-        try:
-            cached=records[0].audit
-            if all(r.audit.get('pending_key')==context_key and r.audit.get('pending_model')==writer and
-                   r.audit.get('pending_group')==[record.pk for record in records] and r.audit.get('prompt_version')==PROMPT_VERSION for r in records):
-                draft=ObjectiveMap.model_validate(cached['pending_draft'])
-            else:
-                proposal=ask_model(job,writer,'map-objectives',MAP_INSTRUCTIONS,json.dumps(prompt_context(context),ensure_ascii=False),CitedMap,16000)
-                draft_audit['raw_proposal']=proposal.model_dump()
-                for record in records:
-                    record.audit={**record.audit,**draft_audit};record.save(update_fields=['audit'])
-                draft=resolve_citations(proposal,context) if isinstance(proposal,CitedMap) else proposal
-            # Preserve a paid draft if its independent check cannot finish. Reuse
-            # requires an explicit retry with identical evidence, schema and model.
-            evidence=context.get('primary_evidence',context['parts'])
-            if draft.objectives:visible_references([r.model_dump() for o in draft.objectives for r in o.references],evidence)
-            draft_audit.update(pending_key=context_key,pending_model=writer,pending_group=[r.pk for r in records],pending_draft=draft.model_dump())
-            for record in records:
-                record.audit={**record.audit,**draft_audit};record.save(update_fields=['audit'])
-            review=ask_model(job,job.reviewer_model or settings.AI_REVIEWER_MODEL,'map-review',MAP_REVIEW,json.dumps({**prompt_context(context),'proposed_inventory':draft.model_dump()},ensure_ascii=False),ScopedMapReview,12000)
-            if save_map(job,records,draft,review,context):
-                completed+=len(records)
-                job.audit={**job.audit,'verified_source_parts':job.audit.get('verified_source_parts',0)+len(records),
-                    'verified_source_characters':job.audit.get('verified_source_characters',0)+sum(len(s['text']) for s in group),
-                    'verified_source_points':job.audit.get('verified_source_points',0)+len(draft.objectives)}
-                job.save(update_fields=['audit'])
-            else:blocked+=len(records)
-        except Exception as error:
-            if isinstance(error,ValidationError):draft_audit={k:v for k,v in draft_audit.items() if not k.startswith('pending_')}
-            block_records(records,'Mapping stopped. Check the job and API audit before explicitly retrying.',draft_audit)
-            raise
-    job.message=f'{completed} source parts verified; {blocked} need review; {max(0,len(groups)-job.count)} batches remain. Match objectives, then link existing questions before generation.'
+        from .automatic_mapping import process_group
+        done, accepted = process_group(job, records, context, ask_model)
+        if done: completed += len(records)
+        else: blocked += len(records)
+        job.audit={**job.audit,'verified_source_parts':job.audit.get('verified_source_parts',0)+(len(records) if done else 0),
+                   'verified_source_points':job.audit.get('verified_source_points',0)+accepted}
+        job.save(update_fields=['audit'])
+    job.message=f'{completed} source parts fully mapped; {blocked} remain incomplete. {job.audit.get("verified_source_points",0)} source-checked objectives retained. Automatic checks require no manual approval. Match objectives, then link existing questions.'
     job.save(update_fields=['message'])

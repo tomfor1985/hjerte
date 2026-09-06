@@ -92,9 +92,13 @@ def plan_targets(chapter, strategy, count, notes_source=None):
     state = mapping_state(segments)
     if len({s['page'].number for s in segments}) != chapter.last_page - chapter.first_page + 1:
         raise ValidationError('This chapter has missing extracted pages. Check the source import before generating questions.')
-    if not segments or any(state.get((s['page'].pk, s['start'], s['digest'])) is None or
-            state[(s['page'].pk, s['start'], s['digest'])].status != 'mapped' for s in segments):
-        raise ValidationError('Map every part of this chapter before generating questions; unresolved text stays visible in Coverage.')
+    current=[state.get((s['page'].pk,s['start'],s['digest'])) for s in segments]
+    complete=bool(current) and all(r and r.status=='mapped' for r in current)
+    from .reconciliation import resolved_ids
+    checked_ids=resolved_ids({oid for r in current if r and r.status in ('mapped','partial')
+                              for oid in r.audit.get('objective_ids',[])})
+    if not complete and not checked_ids:
+        raise ValidationError('Map source-backed learning objectives before generating questions; unresolved text stays visible in Coverage.')
     if chapter.questions.filter(status='published', objective__isnull=True).exists():
         raise ValidationError('Link the existing published questions to learning objectives before generating more for this chapter.')
     note_ids=None
@@ -103,16 +107,17 @@ def plan_targets(chapter, strategy, count, notes_source=None):
             raise ValidationError('Choose active notes linked to this guideline.')
         note_segments=[s for p in notes_source.pages.all() for s in segments_for(p)]
         note_states=mapping_state(note_segments)
-        if not note_segments or any((s['page'].pk,s['start'],s['digest']) not in note_states or
-                note_states[(s['page'].pk,s['start'],s['digest'])].status!='mapped' for s in note_segments):
+        current_notes=[note_states.get((s['page'].pk,s['start'],s['digest'])) for s in note_segments]
+        note_ids=resolved_ids({oid for record in current_notes if record and record.status in ('mapped','partial')
+                              for oid in record.audit.get('objective_ids',[])})
+        if not note_ids:
             raise ValidationError('Map and verify the selected notes before generating their teaching points.')
-        from .reconciliation import resolved_ids
-        note_ids=resolved_ids({oid for s in note_states.values() if s.status=='mapped' for oid in s.audit.get('objective_ids',[])})
     all_rows = objective_rows()
     if strategy == 'variants' and any(r['count'] == 0 and not r['blocked'] for r in all_rows):
         raise ValidationError('Cover the remaining mapped learning objectives before adding variants.')
     rows = objective_rows(chapter)
     eligible = [r for r in rows if not r['blocked'] and r['remaining'] > 0 and
+                (complete or r['objective'].pk in checked_ids) and
                 (note_ids is None or r['objective'].pk in note_ids) and
                 (r['count'] == 0 if strategy == 'coverage' else r['count'] > 0)]
     eligible.sort(key=lambda r: (r['count'], r['objective'].pk))
@@ -154,7 +159,7 @@ def cost_forecast(rows, mapping_complete, generator=None, reviewer=None):
     from .mapping import PROMPT_VERSION
     map_calls = ApiCall.objects.filter(job__kind='map', state='settled',job__audit__inventory_prompt=PROMPT_VERSION)
     map_spend = map_calls.aggregate(n=Sum('actual_nok'))['n'] or Decimal('0')
-    map_attempts = map_calls.filter(purpose='map-objectives').count()
+    map_attempts = map_calls.values('job_id').distinct().count()
     matching_spend=ApiCall.objects.filter(job__kind__in=['reconcile','link_questions'],state='settled').aggregate(n=Sum('actual_nok'))['n'] or Decimal('0')
     inventory_calls=ApiCall.objects.filter(job__audit__pipeline='inventory-2',state='settled')
     inventory_usage=inventory_calls.aggregate(cost=Sum('actual_nok'),inputs=Sum('input_tokens'),cached=Sum('cached_tokens'),reasoning=Sum('reasoning_tokens'))
@@ -188,7 +193,7 @@ def coverage_report(generator=None,reviewer=None):
         old_blocked=len(prior_blocked_parts(segments,states))
         cross_references={}
         for key,record in states.items():
-            if key in keys and record.status=='mapped':
+            if key in keys and record.status in ('mapped','partial'):
                 for ref in record.audit.get('draft',{}).get('cross_references',[]):
                     cross_references[(ref['passage_id'],ref['target'])]=ref
         outstanding=[s for s in segments if (s['page'].pk,s['start'],s['digest']) not in states or
@@ -197,6 +202,8 @@ def coverage_report(generator=None,reviewer=None):
                      states[(s['page'].pk, s['start'], s['digest'])].status == 'mapped') for s in segments)
         blocked = sum(bool(states.get((s['page'].pk, s['start'], s['digest'])) and
                       states[(s['page'].pk, s['start'], s['digest'])].status == 'blocked') for s in segments)
+        partial = sum(bool(states.get((s['page'].pk,s['start'],s['digest'])) and states[(s['page'].pk,s['start'],s['digest'])].status=='partial') for s in segments)
+        issues=list(dict.fromkeys(r.audit.get('reason','') or r.audit.get('stop_reason','') for key,r in states.items() if key in keys and r.status in ('partial','blocked')))
         covered_pages = {n for c in source.chapters.all() for n in range(c.first_page, c.last_page + 1)}
         gaps = source.page_count - len(set(range(1, source.page_count + 1)) & covered_pages) if source.kind == 'guideline' else 0
         missing_pages = source.page_count - source.pages.count()
@@ -204,7 +211,7 @@ def coverage_report(generator=None,reviewer=None):
         all_complete = all_complete and complete
         documents.append({'source': source, 'notes': source.kind == 'notes', 'total': len(segments), 'mapped': mapped,
                           'reading_pages':reading_pages,'unreadable_pages':unreadable_pages,'old_blocked':old_blocked,'cross_references':list(cross_references.values()),
-                          'blocked': blocked, 'gaps': gaps, 'missing_pages': missing_pages, 'complete': complete,
+                          'blocked': blocked, 'partial':partial, 'issues':[i for i in issues if i], 'gaps': gaps, 'missing_pages': missing_pages, 'complete': complete,
                           'batches_remaining':len(list(pack_segments(outstanding)))})
     rows = objective_rows()
     unclassified = Question.objects.filter(status='published', chapter__source__active=True, objective__isnull=True).count()

@@ -76,6 +76,6 @@ SOURCE_LIBRARY = os.environ.get('SOURCE_LIBRARY', '/Users/tomas/Documents/EAPC C
 OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY', '')
 AI_GENERATION_ENABLED = os.environ.get('AI_GENERATION_ENABLED', '0') == '1'
 AI_GENERATOR_MODEL = os.environ.get('AI_GENERATOR_MODEL', 'gpt-5.6-terra')
-AI_MAPPING_MODEL = os.environ.get('AI_MAPPING_MODEL', 'gpt-5.6-terra')
+AI_MAPPING_MODEL = os.environ.get('AI_MAPPING_MODEL', 'gpt-5.6-sol')
 AI_REVIEWER_MODEL = os.environ.get('AI_REVIEWER_MODEL', 'gpt-5.6-sol')
 AI_SERVICE_TIER = os.environ.get('AI_SERVICE_TIER', 'flex')

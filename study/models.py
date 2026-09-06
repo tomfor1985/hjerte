@@ -115,6 +115,7 @@ class Chapter(models.Model):
 
 
 class LearningObjective(models.Model):
+    inventory_key = models.CharField(max_length=64, unique=True, null=True, blank=True, editable=False)
     title = models.CharField(max_length=400)
     topic = models.ForeignKey(Topic, on_delete=models.PROTECT)
     variant_limit = models.PositiveSmallIntegerField(default=1, validators=[MinValueValidator(1), MaxValueValidator(3)])
@@ -151,7 +152,7 @@ class CoverageSegment(models.Model):
     start = models.PositiveIntegerField()
     end = models.PositiveIntegerField()
     digest = models.CharField(max_length=64)
-    status = models.CharField(max_length=16, default='pending', choices=[('pending', 'Not mapped'), ('mapped', 'Mapped'), ('blocked', 'Needs review')])
+    status = models.CharField(max_length=16, default='pending', choices=[('pending', 'Not mapped'), ('mapped', 'Mapped'), ('partial', 'Partially mapped'), ('blocked', 'Unresolved')])
     audit = models.JSONField(default=dict)
 
     class Meta:

@@ -104,7 +104,8 @@ class PDFCitationTests(TestCase):
     def test_successful_mapping_and_unknown_id_audit(self):
         proposal,review,context=self.fixture()
         with patch('study.mapping.ask_model',side_effect=[proposal,review]) as ai:run_job(self.job)
-        self.assertEqual(ai.call_args_list[0].args[5],CitedMap)
+        from study.automatic_mapping import AutomaticMap
+        self.assertEqual(ai.call_args_list[0].args[5],AutomaticMap)
         self.assertEqual(ai.call_args_list[0].args[4].count(page_text(self.page)),1)
         self.assertEqual(LearningObjective.objects.count(),1)
         stored=LearningObjective.objects.get().evidence.get().references

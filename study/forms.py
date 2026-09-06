@@ -84,10 +84,10 @@ class MappingForm(forms.Form):
     notes_last_location = forms.IntegerField(min_value=1,required=False,label='Notes: last location (optional)',help_text='Limit notes to the section supported by this chapter. PDF: page; slides: slide; Word: extracted section. Leave both empty to use the whole file.')
     count = forms.TypedChoiceField(choices=[(n, f'Up to {n} work batch'+('es' if n>1 else '')) for n in (1, 3, 5)], coerce=int, initial=1,
         help_text='A batch covers a source section or up to ten objectives/questions. The job stops at this limit.')
-    generator_model = forms.ChoiceField(choices=[('gpt-5.6-terra','Terra · normal inventory'),('gpt-5.6-sol','Sol'),('gpt-6-astra','Astra · difficult material')],required=False,label='Inventory model')
+    generator_model = forms.ChoiceField(choices=[('gpt-5.6-sol','Sol · automatic source checks'),('gpt-5.6-terra','Terra · lower cost'),('gpt-6-astra','Astra · difficult material')],required=False,label='Inventory model')
     spend_limit_nok = forms.DecimalField(min_value=1,max_value=200,decimal_places=2,required=False,initial=25,label='Maximum job spend (NOK)',help_text='Also limited by the remaining approved allowance. Reservations must fit before a request starts.')
-    retry_blocked = forms.BooleanField(required=False,label='Retry unresolved items after review')
-    retry_reason = forms.CharField(required=False,label='Reason for retry',help_text='Explain what you checked or changed. No automatic paid retry occurs.')
+    retry_blocked = forms.BooleanField(required=False,label='Make another automatic attempt on unresolved items')
+    retry_reason = forms.CharField(required=False,label='Reason for retry',help_text='Optional context for another bounded job. Source checks and up to two repair rounds run automatically.')
 
     def __init__(self,*args,**kwargs):
         super().__init__(*args,**kwargs)
@@ -108,6 +108,6 @@ class MappingForm(forms.Form):
         if first is not None or last is not None:
             if data['kind']!='map' or not notes or first is None or last is None or last<first or last>notes.page_count:
                 self.add_error('notes_last_location','Choose a valid inclusive range within the selected notes file, for source mapping only.')
-        if data.get('retry_blocked') and len(data.get('retry_reason','').strip())<15:
-            self.add_error('retry_reason','Describe the review or changed evidence in at least 15 characters.')
+        if data.get('retry_blocked') and not data.get('retry_reason','').strip():
+            data['retry_reason']='User requested another bounded automatic source check.'
         return data

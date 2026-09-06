@@ -182,7 +182,7 @@ def retire_source(source,user):
     count=sum(retire_source(copy,user) for copy in source.format_copies.filter(active=True))
     # Notes inventoried against this edition must not keep a green coverage
     # status after their authoritative evidence is withdrawn.
-    for segment in CoverageSegment.objects.filter(status='mapped',audit__evidence_source_id=source.pk):
+    for segment in CoverageSegment.objects.filter(status__in=['mapped','partial'],audit__evidence_source_id=source.pk):
         segment.status='blocked'
         segment.audit={**segment.audit,'reason':'The supporting guideline was retired. Verify against its replacement.'}
         segment.save(update_fields=['status','audit'])
@@ -204,6 +204,9 @@ def retire_source(source,user):
 def validate_references(refs, allowed_page_ids=None):
     if not isinstance(refs, list) or not refs:
         raise ValidationError('At least one verified guideline reference is required.')
+    from .pdf_images import reference_images
+    if any(isinstance(ref, dict) and ref.get('visual_evidence') for ref in refs):
+        reference_images(refs)
     for ref in refs:
         if not isinstance(ref, dict):
             raise ValidationError('Reference must include a source page, section and supporting quotation.')
