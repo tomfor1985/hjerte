@@ -1,0 +1,10 @@
+.venv/
+.env
+data/
+backups/
+staticfiles/
+__pycache__/
+*.py[cod]
+.DS_Store
+.coverage
+tmp/

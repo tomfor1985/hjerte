@@ -1,0 +1,17 @@
+{% load static %}<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#101e36"><meta name="description" content="Personal EAPC exam preparation: focused practice, referenced explanations and progress.">
+<meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="manifest" href="/manifest.webmanifest"><link rel="icon" href="{% static 'hjerte/icon.svg' %}" type="image/svg+xml">
+<link rel="apple-touch-icon" href="{% static 'hjerte/icon-192.png' %}"><link rel="stylesheet" href="{% static 'hjerte/app.css' %}">
+<script src="{% static 'hjerte/app.js' %}" defer></script><title>{% block title %}Hjerte · EAPC study{% endblock %}</title></head>
+<body><a class="skip" href="#main">Skip to content</a>
+{% if user.is_authenticated %}<aside class="rail"><a class="brand" href="/">{% include 'study/mark.html' %}<span>hjerte<span class="brand-sub">EAPC STUDY</span></span></a>
+<nav aria-label="Main navigation"><a href="/" {% if nav == 'study' %}aria-current="page"{% endif %}><span>01</span> Study</a><a href="/progress/" {% if nav == 'progress' %}aria-current="page"{% endif %}><span>02</span> Progress</a><a href="/library/" {% if nav == 'library' %}aria-current="page"{% endif %}><span>03</span> Library</a>{% if user.is_staff %}<a href="/studio/" {% if nav == 'studio' %}aria-current="page"{% endif %}><span>04</span> Studio</a>{% endif %}</nav>
+<div class="rail-bottom"><p class="eyebrow">STUDY TARGET</p><strong>May 2027</strong><small>Exam date to be confirmed</small><hr><a href="/password/">{{ user.username }} · Account</a><form action="/logout/" method="post">{% csrf_token %}<button class="text-button">Sign out</button></form></div></aside>{% endif %}
+<main id="main" class="{% if user.is_authenticated %}workspace{% else %}auth-wrap{% endif %}">
+{% if messages %}<div class="messages" role="status">{% for message in messages %}<p class="notice {{ message.tags }}">{{ message }}</p>{% endfor %}</div>{% endif %}
+<div id="connection-status" class="notice warning" hidden>Connection lost. Reconnect before submitting an answer. Your saved answers are safe.</div>
+{% block content %}{% endblock %}</main>
+{% if user.is_authenticated %}<nav class="mobile-nav" aria-label="Mobile navigation"><a href="/" {% if nav == 'study' %}aria-current="page"{% endif %}>Study</a><a href="/progress/" {% if nav == 'progress' %}aria-current="page"{% endif %}>Progress</a><a href="/library/" {% if nav == 'library' %}aria-current="page"{% endif %}>Library</a>{% if user.is_staff %}<a href="/studio/" {% if nav == 'studio' %}aria-current="page"{% endif %}>Studio</a>{% endif %}</nav>{% endif %}
+</body></html>

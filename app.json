@@ -1,0 +1,7 @@
+{
+  "name": "Hjerte",
+  "healthchecks": {
+    "web": [{"type": "startup", "name": "hjerte-health", "description": "Database and Django readiness", "path": "/health/", "attempts": 10, "wait": 5, "timeout": 5}]
+  },
+  "cron": [{"command": "python manage.py backup_hjerte", "schedule": "17 3 * * *"}]
+}

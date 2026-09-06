@@ -1,0 +1,4 @@
+{% extends 'base.html' %}{% block title %}Sign in · Hjerte{% endblock %}{% block content %}
+<section class="login-panel"><a class="brand dark" href="/">{% include 'study/mark.html' %}<span>hjerte<span class="brand-sub">EAPC STUDY</span></span></a><p class="eyebrow">YOUR STUDY SPACE</p><h1>Welcome back.</h1><p class="muted">Sign in to continue your preventive cardiology training.</p>
+<form method="post" class="stack">{% csrf_token %}{{ form.non_field_errors }}<input type="hidden" name="next" value="{{ next }}"><label for="id_username">Username</label>{{ form.username }}<label for="id_password">Password</label>{{ form.password }}<button class="button primary">Sign in</button></form>
+<p class="small muted">Private study library · English MCQs · May 2027</p></section>{% endblock %}
