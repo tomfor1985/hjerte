@@ -111,7 +111,7 @@ def session_view(request,session_id):
     if session.status=='complete':
         return redirect('results',session_id=session.id)
     if session.status=='break':
-        return render(request,'study/break.html',{'session':session,'deadline':session.break_until.isoformat(),'nav':'study'})
+        return render(request,'study/break.html',{'session':session,'deadline':session.break_until.isoformat(),'server_now':timezone.now().isoformat(),'nav':'study'})
     try:
         position=int(request.GET.get('q',session.cursor))
     except (ValueError,TypeError):
@@ -129,7 +129,7 @@ def session_view(request,session_id):
         'total':total,'next_position':min(item.position+1,total),'previous_position':max(item.position-1,1),
         'is_last':item.position==total,'part_last':session.mode=='exam' and item.position==70,
         'part_questions':nav_items,'answered_count':session.items.filter(answered_at__isnull=False).count(),
-        'persistent_flag':p.flagged if p else False,'nav':'study',
+        'persistent_flag':p.flagged if p else False,'nav':'study','server_now':timezone.now().isoformat(),
         'deadline':(session.part_started_at+timedelta(seconds=PART_SECONDS)).isoformat() if session.mode=='exam' else ''})
 
 

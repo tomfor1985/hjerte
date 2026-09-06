@@ -10,7 +10,7 @@ from django.db import IntegrityError
 from django.utils import timezone
 from pydantic import BaseModel, ConfigDict
 from typing import Literal
-from .models import ApiBudget, ApiCall, Question, GenerationJob
+from .models import ApiBudget, ApiCall, Question, GenerationJob, Source
 from .sources import validate_references, normalize
 
 # USD per million tokens, short context, checked 2026-09-06.
@@ -280,6 +280,11 @@ def run_job(job):
                 q.verification={**q.verification,'state':'reviewed','blind_review':first.model_dump(),'rationale_review':second.model_dump(),
                                 'reviewer':settings.AI_REVIEWER_MODEL,'source_checked':True}
                 q.status='published' if passed else 'quarantined'
+                supplied_ids=[chapter.source_id]+q.verification['provenance']['note_source_ids']
+                if Source.objects.filter(pk__in=supplied_ids,active=False).exists():
+                    q.status='retired'
+                    passed=False
+                    q.verification['state']='source_retired_during_generation'
                 q.full_clean(exclude=['fingerprint'])
                 q.save()
                 if passed: job.published+=1

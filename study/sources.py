@@ -117,12 +117,13 @@ def setup_known_chapters(source):
     mapping = []
     if source.doi.endswith('ehae178'):
         mapping = [
-            ('hypertension', 'Measurement and diagnosis', '5', 19, 25),
-            ('hypertension', 'Classification and cardiovascular risk', '6', 26, 31),
+            ('hypertension', 'Pathophysiology and clinical consequences', '3–4', 17, 18),
+            ('hypertension', 'Measurement and diagnosis', '5', 18, 25),
+            ('hypertension', 'Classification and cardiovascular risk', '6', 25, 31),
             ('hypertension', 'Work-up, resistant and secondary hypertension', '7', 32, 42),
             ('hypertension', 'Lifestyle and treatment strategies', '8', 43, 58),
             ('hypertension', 'Special populations and comorbidities', '9', 58, 72),
-            ('hypertension', 'Follow-up and patient-centred care', '10–11', 73, 76),
+            ('hypertension', 'Acute blood pressure management and patient-centred care', '10–11', 72, 76),
         ]
     elif source.doi.endswith('ehab484'):
         mapping = [

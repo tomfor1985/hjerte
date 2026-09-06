@@ -327,3 +327,22 @@ class BudgetTests(TestCase):
         with self.assertRaises(BudgetError):reserve_call(self.job,'unpriced','test',1000,1000)
         self.budget.price_valid_until=timezone.localdate()-timedelta(days=1);self.budget.save()
         with self.assertRaises(BudgetError):reserve_call(self.job,'gpt-6-astra','test',1000,1000)
+
+    def test_generation_requires_blind_and_rationale_agreement_and_keeps_provenance(self):
+        from study.generation import run_job,DraftQuestion,ReviewBatch,Verdict
+        self.job.count=1
+        draft=DraftQuestion(stem='A new independently checked question?',choices=self.question.choices,
+            answer=2,explanation='A source-grounded explanation.',learning_point='Distinct objective',
+            references=self.question.references,difficulty='basic',question_type='direct')
+        good=Verdict(index=0,best_answer=2,single_best_answer=True,evidence_supports_answer=True,
+            reference_section_accurate=True,explanations_accurate=True,within_source_scope=True,notes='Supported')
+        bad=good.model_copy(update={'explanations_accurate':False})
+        with patch('study.generation.ask_model',side_effect=[DraftBatch(questions=[draft]),ReviewBatch(verdicts=[good]),ReviewBatch(verdicts=[bad])]) as ai:
+            run_job(self.job)
+        q=Question.objects.get(stem=draft.stem)
+        self.assertEqual(q.status,'quarantined')
+        self.assertEqual(q.verification['provenance']['source_id'],self.source.id)
+        self.assertEqual(q.verification['provenance']['sha256'],self.source.sha256)
+        blind=json.loads(ai.call_args_list[1].args[4])['questions'][0]
+        self.assertNotIn('answer',blind);self.assertNotIn('explanation',blind)
+        self.assertTrue(all(isinstance(c,str) for c in blind['choices']))

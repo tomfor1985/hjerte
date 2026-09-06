@@ -8,9 +8,11 @@
   }));
   document.querySelectorAll('[data-deadline]').forEach(element => {
     const deadline = new Date(element.dataset.deadline).getTime();
+    const serverNow = new Date(element.dataset.serverNow).getTime();
+    const clockOffset = Number.isFinite(serverNow) ? serverNow - Date.now() : 0;
     let expired = false;
     function tick() {
-      const seconds = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+      const seconds = Math.max(0, Math.ceil((deadline - Date.now() - clockOffset) / 1000));
       element.textContent = `${Math.floor(seconds / 60).toString().padStart(2,'0')}:${(seconds % 60).toString().padStart(2,'0')}`;
       element.classList.toggle('urgent', seconds < 300);
       if (!seconds && !expired) { expired = true; setTimeout(() => location.reload(), 1000); }
