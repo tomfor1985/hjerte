@@ -18,7 +18,7 @@ class ImportForm(forms.Form):
     doi = forms.CharField(max_length=160,required=False)
     topic = forms.ModelChoiceField(queryset=Topic.objects.all(),required=False,
         help_text='For a guideline: the default topic for automatically suggested chapters.')
-    supporting_guidelines = forms.ModelMultipleChoiceField(queryset=Source.objects.filter(kind='guideline',active=True),required=False,help_text='For notes: select the guidelines that must support their teaching points.')
+    supporting_guidelines = forms.ModelMultipleChoiceField(queryset=Source.objects.for_study().filter(kind='guideline'),required=False,help_text='For notes: select the guidelines that must support their teaching points.')
 
     def clean(self):
         data = super().clean()
@@ -33,7 +33,7 @@ class NotesSourcesForm(forms.ModelForm):
         fields = ['supporting_guidelines']
     def __init__(self,*args,**kwargs):
         super().__init__(*args,**kwargs)
-        self.fields['supporting_guidelines'].queryset = Source.objects.filter(kind='guideline',active=True)
+        self.fields['supporting_guidelines'].queryset = Source.objects.for_study().filter(kind='guideline')
 
 
 ChapterFormSet = forms.inlineformset_factory(Source,Chapter,
@@ -59,8 +59,8 @@ class ModelPairForm(forms.Form):
 class GenerateForm(ModelPairForm):
     strategy = forms.ChoiceField(choices=[('coverage','Increase coverage'),('variants','Add useful variants')],initial='coverage',required=False,
         help_text='Uncovered objectives first. Variants require a distinct testing angle and stop at the objective ceiling.')
-    chapter = forms.ModelChoiceField(queryset=Chapter.objects.filter(source__kind='guideline',source__active=True).select_related('source'))
-    notes_source = forms.ModelChoiceField(queryset=Source.objects.filter(kind='notes',active=True),required=False,
+    chapter = forms.ModelChoiceField(queryset=Chapter.objects.filter(source__kind='guideline',source__active=True,source__duplicate_of__isnull=True).select_related('source'))
+    notes_source = forms.ModelChoiceField(queryset=Source.objects.for_study().filter(kind='notes'),required=False,
         label='Focus on specific notes',empty_label='Use relevant linked notes',
         help_text='Optional. Questions use this file for teaching ideas and the selected guideline for evidence.')
     count = forms.TypedChoiceField(choices=[(n,str(n)) for n in (5,10,20,50)],coerce=int,initial=5)
@@ -75,8 +75,8 @@ class GenerateForm(ModelPairForm):
 
 
 class MappingForm(forms.Form):
-    chapter = forms.ModelChoiceField(queryset=Chapter.objects.filter(source__kind='guideline', source__active=True).select_related('source'))
-    notes_source = forms.ModelChoiceField(queryset=Source.objects.filter(kind='notes', active=True), required=False,
+    chapter = forms.ModelChoiceField(queryset=Chapter.objects.filter(source__kind='guideline', source__active=True,source__duplicate_of__isnull=True).select_related('source'))
+    notes_source = forms.ModelChoiceField(queryset=Source.objects.for_study().filter(kind='notes'), required=False,
         label='Map study notes instead', empty_label='Map the guideline chapter',
         help_text='Notes are inventoried only when their teaching points can be verified against this guideline chapter.')
     count = forms.TypedChoiceField(choices=[(n, f'Up to {n} mapping batch'+('es' if n>1 else '')) for n in (1, 3, 5)], coerce=int, initial=1,

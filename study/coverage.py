@@ -62,6 +62,8 @@ def objective_rows(chapter=None):
 
 
 def plan_targets(chapter, strategy, count, notes_source=None):
+    if not Source.objects.for_study().filter(pk=chapter.source_id,kind='guideline').exists():
+        raise ValidationError('Choose an active main guideline copy.')
     if strategy not in ('coverage', 'variants') or not 1 <= count <= 50:
         raise ValidationError('Choose a valid generation plan and a limit of 1–50 questions.')
     segments = chapter_segments(chapter)
@@ -75,7 +77,7 @@ def plan_targets(chapter, strategy, count, notes_source=None):
         raise ValidationError('Link the existing published questions to learning objectives before generating more for this chapter.')
     note_ids=None
     if notes_source:
-        if not notes_source.active or not notes_source.supporting_guidelines.filter(pk=chapter.source_id).exists():
+        if not Source.objects.for_study().filter(pk=notes_source.pk,kind='notes',supporting_guidelines=chapter.source_id).exists():
             raise ValidationError('Choose active notes linked to this guideline.')
         note_segments=[s for p in notes_source.pages.all() for s in segments_for(p)]
         note_states=mapping_state(note_segments)
@@ -145,7 +147,7 @@ def cost_forecast(rows, mapping_complete, generator=None, reviewer=None):
 def coverage_report(generator=None,reviewer=None):
     documents = []
     all_complete = True
-    for source in Source.objects.filter(active=True).prefetch_related('pages', 'chapters').order_by('kind', 'title'):
+    for source in Source.objects.for_study().prefetch_related('pages', 'chapters').order_by('kind', 'title'):
         segments = [s for p in source.pages.all() for s in segments_for(p)]
         states = mapping_state(segments)
         outstanding=[s for s in segments if (s['page'].pk,s['start'],s['digest']) not in states or
@@ -173,7 +175,7 @@ def coverage_report(generator=None,reviewer=None):
             'covered': sum(r['count'] > 0 for r in rows), 'unclassified': unclassified,
             'blocked': sum(r['blocked'] for r in rows), 'mapping_complete': all_complete,
             'forecast': forecast,
-            'chapters': Chapter.objects.filter(source__kind='guideline', source__active=True).select_related('source')}
+            'chapters': Chapter.objects.filter(source__kind='guideline', source__active=True,source__duplicate_of__isnull=True).select_related('source')}
 
 
 def question_catalog():

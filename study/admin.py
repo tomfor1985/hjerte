@@ -20,7 +20,7 @@ class QuestionAdmin(admin.ModelAdmin):
 @admin.register(Source)
 class SourceAdmin(admin.ModelAdmin):
     list_display=['title','year','kind','page_count','active']
-    readonly_fields=['sha256','original_name','file','page_count','imported_at','extraction_warning']
+    readonly_fields=['sha256','original_name','file','page_count','imported_at','extraction_warning','duplicate_of','duplicate_note']
     def has_add_permission(self,request):
         return False
 

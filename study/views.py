@@ -23,6 +23,7 @@ from .models import (Topic, Source, SourcePage, Chapter, Question, StudySession,
                      QuestionProgress, GenerationJob, ApiBudget, LoginThrottle)
 from .sources import import_source, retire_source
 from .coverage import coverage_report, plan_targets
+from .source_copies import format_pairs, prefer_pdf, restore_separate_copy
 
 
 def login_view(request):
@@ -218,9 +219,10 @@ def progress_view(request):
 
 @login_required
 def library(request):
-    sources=Source.objects.prefetch_related('chapters__topic').all().order_by('-year','title')
-    chapters=Chapter.objects.select_related('source','topic').annotate(n=Count('questions',filter=Q(questions__status='published')))
-    return render(request,'study/library.html',{'sources':sources,'chapters':chapters,'coverage':coverage_summary(),'nav':'library'})
+    sources=Source.objects.filter(duplicate_of__isnull=True).prefetch_related('chapters__topic').order_by('-year','title')
+    copies=Source.objects.filter(duplicate_of__isnull=False).select_related('duplicate_of')
+    chapters=Chapter.objects.filter(source__duplicate_of__isnull=True).select_related('source','topic').annotate(n=Count('questions',filter=Q(questions__status='published')))
+    return render(request,'study/library.html',{'sources':sources,'copies':copies,'chapters':chapters,'coverage':coverage_summary(),'nav':'library'})
 
 
 @login_required
@@ -249,6 +251,8 @@ def studio(request):
                     if source.kind=='notes' and linked:
                         source.supporting_guidelines.set(linked)
                     messages.success(request,'Source imported.' if created else 'This exact document is already in the library.')
+                    if format_pairs(source):
+                        messages.info(request,'Another format with the same filename is in the library. Check that it is the same edition, then select the PDF as the main copy below.')
                     return redirect('source_setup',source_id=source.pk)
                 except (ValidationError,ValueError,UnicodeError) as e:
                     import_form.add_error(None,e)
@@ -309,6 +313,23 @@ def coverage_view(request):
 @staff_member_required(login_url='/login/')
 def source_setup(request,source_id):
     source=get_object_or_404(Source,pk=source_id)
+    if request.method=='POST' and request.POST.get('action')=='restore_copy':
+        restore_separate_copy(source,request.user)
+        messages.success(request,'This file is available as a separate source again.')
+        return redirect('source_setup',source_id=source.pk)
+    if request.method=='POST' and request.POST.get('action')=='prefer_pdf':
+        pairs=format_pairs(source)
+        pair=next((p for p in pairs if str(p['copy'].pk)==request.POST.get('copy_id') and str(p['main'].pk)==request.POST.get('main_id')),None)
+        if pair is None:
+            messages.error(request,'These files are not a matching PDF/alternate-format pair.')
+        else:
+            try:
+                prefer_pdf(pair['copy'],pair['main'],request.user)
+                messages.success(request,'PDF selected as the main copy. Existing questions, original files and past results are preserved.')
+                return redirect('source_setup',source_id=pair['main'].pk)
+            except ValidationError as error:
+                messages.error(request,' '.join(error.messages))
+        return redirect('source_setup',source_id=source.pk)
     if request.method=='POST' and request.POST.get('action')=='retire':
         count=retire_source(source,request.user)
         messages.success(request,f'Source retired. {count} questions removed from future practice and exams. Past results are preserved.')
@@ -323,9 +344,10 @@ def source_setup(request,source_id):
         return redirect('source_setup',source_id=source.pk)
     generate=GenerateForm(initial={'notes_source':source.pk} if source.kind=='notes' else None)
     eligible=source.chapters.all() if source.kind=='guideline' else Chapter.objects.filter(source__in=source.supporting_guidelines.filter(active=True))
-    generate.fields['chapter'].queryset=eligible.filter(source__active=True).select_related('source')
+    generate.fields['chapter'].queryset=eligible.filter(source__active=True,source__duplicate_of__isnull=True).select_related('source')
     return render(request,'study/source_setup.html',{'source':source,'chapters':chapters,'notes':notes,
-        'generate_form':generate,'can_generate':source.active and eligible.exists(),'nav':'studio'})
+        'generate_form':generate,'can_generate':source.active and not source.duplicate_of_id and eligible.exists(),
+        'format_pairs':format_pairs(source),'copies':source.format_copies.all(),'nav':'studio'})
 
 
 def health(request):

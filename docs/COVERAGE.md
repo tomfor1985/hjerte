@@ -8,6 +8,14 @@ The mapper proposes assessable objectives with primary-source quotations, meanin
 
 Objectives are shared across documents. Evidence retains chapter, source edition and page references; mapping audits retain source hashes and exact proposals/reviews. New editions are separate sources. Retiring an evidence source removes its questions from future sessions and invalidates dependent note inventories. Existing attempt snapshots are never rewritten by classification.
 
+## Duplicate file formats
+
+Prefer PDF when a Word or PowerPoint file and its PDF export contain the same edition. Unique non-PDF documents remain available. Matching filenames suggest a pair in Source setup; an administrator explicitly confirms the pair with `Use PDF as the main copy`. Matching names alone never merge documents, and different editions remain separate.
+
+The alternate file is retained under `Alternate formats retained for history`, with its original pages, hashes, mapping audits and question links. Only the main file appears in new mapping/generation selectors and document coverage totals. Existing questions and attempt snapshots are unchanged. Earlier Word section mappings are not relabelled as PDF page mappings; the objective catalogue remains available for reuse during later mapping. Linking copies does not make an API call.
+
+`Use this file separately again` reverses the link without reimporting. Retiring the main source later also retires its alternate formats and related questions, preserving attempt history. For an explicitly identified existing pair, `prefer_pdf_copy --copy ID --main PDF_ID --user ADMIN` applies the same validated, idempotent operation as the UI; migrations contain no library-specific source IDs.
+
 ## Generation rules
 
 - The selected chapter must be mapped and its existing published questions classified before generating more.

@@ -52,7 +52,7 @@ Compare EVERY proposed objective with the existing catalogue and other proposals
 
 def map_segments(job):
     if job.notes_source_id:
-        if not job.notes_source.active or not job.notes_source.supporting_guidelines.filter(pk=job.chapter.source_id).exists():
+        if not Source.objects.for_study().filter(pk=job.notes_source_id,kind='notes',supporting_guidelines=job.chapter.source_id).exists():
             raise ValidationError('Choose active notes linked to the selected guideline.')
         return [s for p in job.notes_source.pages.all() for s in segments_for(p)]
     return chapter_segments(job.chapter)
@@ -126,7 +126,7 @@ def run_mapping_job(job):
         raise ValidationError('Map 1–5 text segments per job.')
     generator_model=job.generator_model or settings.AI_MAPPING_MODEL
     reviewer_model=job.reviewer_model or settings.AI_REVIEWER_MODEL
-    if job.chapter.source.kind != 'guideline' or not job.chapter.source.active:
+    if not Source.objects.for_study().filter(pk=job.chapter.source_id,kind='guideline').exists():
         raise ValidationError('Mapping needs an active primary guideline.')
     segments = map_segments(job)
     state = mapping_state(segments)

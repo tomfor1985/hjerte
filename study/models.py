@@ -1,5 +1,6 @@
 import hashlib
 import uuid
+from pathlib import Path
 from decimal import Decimal
 from django.conf import settings
 from django.core.exceptions import ValidationError
@@ -32,6 +33,11 @@ class Topic(models.Model):
         return self.title
 
 
+class SourceQuerySet(models.QuerySet):
+    def for_study(self):
+        return self.filter(active=True, duplicate_of__isnull=True)
+
+
 class Source(models.Model):
     KIND = [('guideline', 'Guideline'), ('notes', 'Study notes')]
     title = models.CharField(max_length=300)
@@ -45,11 +51,24 @@ class Source(models.Model):
     page_count = models.PositiveIntegerField(default=0)
     imported_at = models.DateTimeField(auto_now_add=True)
     active = models.BooleanField(default=True)
+    duplicate_of = models.ForeignKey('self',on_delete=models.PROTECT,null=True,blank=True,related_name='format_copies')
+    duplicate_note = models.TextField(blank=True)
     extraction_warning = models.TextField(blank=True)
     supporting_guidelines = models.ManyToManyField('self',symmetrical=False,blank=True,related_name='study_notes')
+    objects = SourceQuerySet.as_manager()
+
+    def clean(self):
+        if self.duplicate_of_id:
+            if self.duplicate_of_id==self.pk:
+                raise ValidationError('A source cannot be its own main copy.')
+            target=self.duplicate_of
+            if target.duplicate_of_id or target.kind!=self.kind or not target.active:
+                raise ValidationError('Choose an active main copy of the same source kind.')
+            if self.pk and self.format_copies.exists():
+                raise ValidationError('This source already has format copies. Resolve those links first.')
 
     def __str__(self):
-        return self.title
+        return f'{self.title} · {Path(self.original_name).suffix.lstrip(".").upper()}' if Path(self.original_name).suffix else self.title
 
 
 class SourcePage(models.Model):

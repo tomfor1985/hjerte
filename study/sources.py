@@ -175,6 +175,9 @@ def retire_source(source,user):
     from .models import CoverageSegment
     source.active=False
     source.save(update_fields=['active'])
+    # Alternate formats represent the same edition. Withdrawing the main file
+    # must also withdraw questions that retain an alternate file's provenance.
+    count=sum(retire_source(copy,user) for copy in source.format_copies.filter(active=True))
     # Notes inventoried against this edition must not keep a green coverage
     # status after their authoritative evidence is withdrawn.
     for segment in CoverageSegment.objects.filter(status='mapped',audit__evidence_source_id=source.pk):
@@ -182,7 +185,6 @@ def retire_source(source,user):
         segment.audit={**segment.audit,'reason':'The supporting guideline was retired. Verify against its replacement.'}
         segment.save(update_fields=['status','audit'])
     page_ids=set(source.pages.values_list('id',flat=True))
-    count=0
     for q in Question.objects.exclude(status='retired').select_related('chapter'):
         provenance=q.verification.get('provenance',{})
         linked=(q.chapter.source_id==source.pk or provenance.get('source_id')==source.pk

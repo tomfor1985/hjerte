@@ -209,9 +209,9 @@ def run_job(job):
     generator_model=job.generator_model or settings.AI_GENERATOR_MODEL
     reviewer_model=job.reviewer_model or settings.AI_REVIEWER_MODEL
     chapter=job.chapter
-    if chapter.source.kind!='guideline' or not chapter.source.active:
+    if not Source.objects.for_study().filter(pk=chapter.source_id,kind='guideline').exists():
         raise ValidationError('Generate from an active authoritative guideline, not study notes.')
-    linked_notes=chapter.source.study_notes.filter(kind='notes',active=True)
+    linked_notes=chapter.source.study_notes.for_study().filter(kind='notes')
     if job.notes_source_id:
         linked_notes=linked_notes.filter(pk=job.notes_source_id)
         if not linked_notes.exists():
