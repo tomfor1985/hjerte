@@ -21,7 +21,7 @@ PDF imports require Poppler (`brew install poppler` on macOS; bundled in the con
 
 ## Questions and AI budget
 
-The Studio imports documents and queues batches. Add page ranges for a new guideline in the chapter editor before generating. AI uses notes for learning ideas, but all published answers must cite an exact passage in an active guideline. Each candidate receives a blind answer check and a separate explanation check. Cases, direct questions and interpretation questions are included. A model agreement is a quality check, not a guarantee; the editor supports corrections and retirement.
+The Studio imports documents, suggests chapters from recognised sections or PDF bookmarks, and queues batches. When bookmarks are unavailable, editable page groups cover the full document. Choose a topic on import and adjust the suggestions if needed. For notes, link supporting guidelines and optionally focus generation on that specific file. AI uses notes for learning ideas, but all published answers must cite an exact passage in an active guideline. Each candidate receives a blind answer check and a separate explanation check. Generation provenance retains guideline identity, version, source hash, job and supplied notes. Retiring a source removes related questions from new sessions while preserving historical attempts. Cases, direct questions and interpretation questions are included. A model agreement is a quality check, not a guarantee; the editor supports corrections and retirement.
 
 ```sh
 # Only after explicit user authorization; this sets TOTAL allowance, not a top-up.
