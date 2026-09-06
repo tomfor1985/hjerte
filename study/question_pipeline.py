@@ -140,6 +140,8 @@ def run_questions(job,ask):
     try:
         if job.audit.get('resume_saved_questions'):
             return resume_saved(job,ask,reviewer)
+        job.audit={**job.audit,'question_pipeline':'compact-2'}
+        job.save(update_fields=['audit'])
         remaining=job.count
         while remaining>0:
             targets=plan_targets(job.chapter,job.strategy,min(5,remaining),job.notes_source)

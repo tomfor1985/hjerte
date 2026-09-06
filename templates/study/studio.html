@@ -1,1 +1,75 @@
-{% extends 'base.html' %}{% block content %}<header class="page-head"><div><p class="eyebrow">QUESTION STUDIO</p><h1>Grow your study bank.</h1></div><a class="button secondary" href="/admin/study/question/">Edit questions →</a></header><div class="studio-stats"><span><strong>{{ published }}</strong> published</span><span><strong>{{ quarantined }}</strong> held for review</span><span><strong>{{ budget.remaining|floatformat:2 }} NOK</strong> allowance remaining</span></div><p class="notice">Approved allowance: {{ budget.allowance_nok }} NOK. Accounted spend and reservations: {{ budget.accounted_nok|floatformat:2 }} NOK. {{ budget.approval_note }}</p><p class="notice"><a href="/studio/coverage/"><strong>Coverage & cost planner →</strong></a><br>Map learning objectives, inspect gaps and estimate the cost before growing the bank.</p><div class="studio-grid"><section class="panel"><h2>Generate questions</h2><p class="muted">Fill gaps in a mapped chapter first. Additional variants require a useful new testing angle and stop at the objective ceiling.</p><form method="post">{% csrf_token %}<input type="hidden" name="action" value="generate">{{ generate_form.as_p }}<button class="button primary" {% if not enabled %}disabled{% endif %}>Generate & verify</button></form>{% if not enabled %}<p class="small muted">Add the API key to enable generation. No API calls are made while it is missing.</p>{% endif %}<p class="small muted">A separate AI check must agree with the answer and source evidence. One independent check covers the answer, every explanation, sources and overlap. Uncertain source context may receive an additional check. Unresolved questions stay unpublished.</p></section><section class="panel"><h2>Add a source</h2><form method="post" enctype="multipart/form-data">{% csrf_token %}<input type="hidden" name="action" value="import">{{ import_form.as_p }}<button class="button secondary">Import document</button></form><p class="small muted">PDF, DOCX, PPTX, TXT or MD · up to 50 MB. Files stay in your private library.</p><a href="/admin/study/chapter/">Manage chapters and page ranges →</a></section></div><section class="section"><h2>Generation history</h2>{% for job in jobs %}<div class="list-row job-row"><div><strong>{{ job.chapter.title }}</strong><span class="small muted">{{ job.get_kind_display }}{% if job.generator_model %} · {{ job.generator_model }} + {{ job.reviewer_model }}{% endif %} · {{ job.created_at|date:'j M, H:i' }} · requested {{ job.count }} · {{ job.published }} published · {{ job.quarantined }} held</span>{% if job.message %}<p class="small muted">{{ job.message }}</p>{% endif %}</div><div class="job-actions"><span class="badge">{{ job.get_status_display }}</span>{% if job.kind == 'questions' and job.status == 'failed' %}<form method="post">{% csrf_token %}<input type="hidden" name="action" value="resume_questions"><input type="hidden" name="job_id" value="{{ job.id }}"><button class="button secondary">Finish saved questions</button></form>{% endif %}</div></div>{% empty %}<p class="muted">Generation jobs will appear here.</p>{% endfor %}</section>{% endblock %}
+{% extends 'base.html' %}
+{% block content %}
+<header class="page-head"><div><p class="eyebrow">QUESTION STUDIO</p><h1>Build your study bank.</h1><p class="muted">{{ published }} published questions · {{ costs.unfinished }} saved drafts awaiting checks</p></div><a class="button secondary" href="/admin/study/question/">Edit questions</a></header>
+<nav class="studio-links" aria-label="Studio sections"><a href="#costs">Costs</a><a href="#completion-estimate">Coverage estimate</a><a href="#generate-questions">New questions</a><a href="#add-source">Add a source</a><a href="#history">Recent runs</a><a href="/studio/coverage/">Coverage planner →</a></nav>
+
+<section class="panel studio-next" aria-labelledby="next-heading">
+  <p class="eyebrow">RECOMMENDED NEXT STEP</p><h2 id="next-heading">{{ next_step.title }}</h2><p>{{ next_step.description }}</p>
+  {% if next_step.chapter %}<p><strong>{{ next_step.chapter.title }}</strong></p>{% endif %}
+  {% if next_step.job %}<p><strong>{{ next_step.job.chapter.title }}</strong>{% if next_step.kind == 'resume' %}<br>{{ next_step.job.unfinished_count }} saved drafts · up to {{ next_step.job.available|floatformat:2 }} NOK available within the original run cap{% endif %}</p>{% endif %}
+  {% if next_step.kind == 'resume' %}
+    <form method="post">{% csrf_token %}<input type="hidden" name="action" value="resume_questions"><input type="hidden" name="job_id" value="{{ next_step.job.pk }}"><button class="button primary" {% if not enabled %}disabled{% endif %}>Finish saved questions</button></form>
+    <p class="small muted">{% if next_step.job.review_credit %}Includes {{ next_step.job.review_credit|floatformat:2 }} NOK already reserved for the check. {% endif %}Uses the existing allowance to check these drafts. No new questions are written. A check starts only if its full reservation fits; the available amount is a limit, not a price estimate.</p>
+  {% else %}<a class="button primary" href="{{ next_step.url }}">{{ next_step.label }}</a>{% if next_step.kind != 'wait' and next_step.kind != 'held' %}<p class="small muted">Opens the setup only. Nothing starts until you submit a run with its cost limit.</p>{% endif %}{% endif %}
+  {% if not enabled %}<p class="small muted">API generation is currently disabled. You can still inspect costs and import sources.</p>{% endif %}
+</section>
+
+<section class="section" id="costs" aria-labelledby="cost-heading">
+  <div class="section-title"><h2 id="cost-heading">Where the allowance goes</h2><span class="small muted">All recorded runs · NOK</span></div>
+  <div class="cost-metrics">
+    <div class="cost-metric available"><span>Available</span><strong>{{ budget.remaining|floatformat:2 }}</strong><small>of {{ budget.allowance_nok|floatformat:2 }} approved</small></div>
+    <div class="cost-metric"><span>Recorded spend</span><strong>{{ costs.spent|floatformat:2 }}</strong><small>Confirmed usage, including unsuccessful work</small></div>
+    <div class="cost-metric"><span>Reserved for work</span><strong>{{ costs.reserved|floatformat:2 }}</strong><small>Planned or in-progress requests</small></div>
+    <div class="cost-metric"><span>Unconfirmed cost</span><strong>{{ costs.uncertain|floatformat:2 }}</strong><small>Held aside until usage is reconciled</small></div>
+  </div>
+  {% if costs.difference %}<p class="notice warning">Ledger difference: {{ costs.difference|floatformat:4 }} NOK. The allowance ledger and recorded calls do not fully reconcile. Available allowance still comes from the original ledger; no balance was changed.</p>{% endif %}
+  <div class="studio-grid cost-panels">
+    <section class="panel"><h3>Cost by purpose</h3><p class="small muted">Recorded spend only. Reservations are shown separately above.</p>
+      <dl class="cost-breakdown">{% for row in costs.categories %}<div><dt>{{ row.label }}</dt><dd>{{ row.spent|floatformat:2 }} NOK</dd></div>{% endfor %}<div class="cost-total"><dt>Total recorded spend</dt><dd>{{ costs.spent|floatformat:2 }} NOK</dd></div></dl>
+      <details><summary>How these amounts are calculated</summary><p class="small muted">Reported token usage is converted using the recorded model prices, {{ budget.nok_per_usd|floatformat:2 }} NOK/USD and a {{ budget.tax_reserve|floatformat:2 }} cost-reserve multiplier. These are usage-based estimates, not an invoice total.</p><p class="small muted">Source inventory and matching are reusable preparation. They are kept separate from the cost of producing questions. Extra work includes explicitly recorded repair calls and additional question checks. Older inventory checks after a repair remain under source inventory.</p><p class="small muted">{{ budget.accounted_nok|floatformat:2 }} NOK is committed in the allowance ledger. Unconfirmed requests keep their reservation; they are not charged again by this page. Cancelled, unsent checks are excluded.</p><p class="small muted">{{ budget.approval_note }}</p></details>
+    </section>
+    <section class="panel"><h3>Cost per published question</h3><p class="small muted">Writing and all question checks, including held or unfinished candidates. Source preparation is excluded.</p>
+      {% for flow in costs.flows %}<div class="flow-cost {% if flow.current %}current{% endif %}"><strong>{{ flow.label }}</strong>
+        {% if flow.unit != None %}<p class="flow-price">{{ flow.unit|floatformat:2 }} <span>NOK / published question</span></p><p class="small muted">{{ flow.spent|floatformat:2 }} NOK · {{ flow.published }} publications recorded by these runs</p>
+        {% elif flow.calls %}<p>No published result yet.</p><p class="small muted">{{ flow.spent|floatformat:2 }} NOK recorded so far. A unit cost needs at least one published question.</p>
+        {% else %}<p>Not measured yet.</p><p class="small muted">The next new run will establish a baseline. Earlier results are not a measured price for this flow.</p>{% endif %}
+        {% if flow.reserved or flow.uncertain %}<p class="small muted">{{ flow.reserved|floatformat:2 }} NOK reserved · {{ flow.uncertain|floatformat:2 }} NOK unconfirmed, excluded from the unit cost.</p>{% endif %}
+      </div>{% endfor %}
+      <p class="small muted">Reusable preparation to date: {{ costs.preparation|floatformat:2 }} NOK, including source repairs. It is already included in total spend. Small samples and unfinished work can change the question rate.</p>
+    </section>
+  </div>
+</section>
+
+{% include 'study/completion_estimate.html' %}
+
+<section class="section panel" id="generate-questions" aria-labelledby="generate-heading">
+  <h2 id="generate-heading">Generate questions</h2><p class="muted">Use checked learning objectives to fill coverage gaps. Source checks run automatically.</p>
+  <form method="post">{% csrf_token %}<input type="hidden" name="action" value="generate">{{ generate_form.non_field_errors }}
+    <div class="studio-primary-fields"><div>{{ generate_form.chapter.as_field_group }}</div><div>{{ generate_form.count.as_field_group }}</div><div>{{ generate_form.spend_limit_nok.as_field_group }}</div></div>
+    <details class="studio-options" {% if generate_form.errors %}open{% endif %}><summary>Models, notes & useful variants</summary>
+      <div class="form-grid"><div>{{ generate_form.generator_model.as_field_group }}</div><div>{{ generate_form.reviewer_model.as_field_group }}</div><div>{{ generate_form.strategy.as_field_group }}</div><div>{{ generate_form.notes_source.as_field_group }}</div></div>
+    </details>
+    <button class="button primary" {% if not enabled %}disabled{% endif %}>Generate & verify</button>
+    <p class="small muted">Uses the existing approved allowance. Writing and the normal source check must both fit before a question group starts. An additional check is used only when more source context could resolve uncertainty.</p>
+  </form>
+</section>
+
+<details class="section panel" id="add-source" {% if import_form.is_bound %}open{% endif %}><summary>Add a source</summary><p class="muted">Import a guideline or study notes. Importing is free; AI work starts separately.</p><form method="post" enctype="multipart/form-data">{% csrf_token %}<input type="hidden" name="action" value="import">{{ import_form.as_p }}<button class="button secondary">Import document</button></form><p class="small muted">PDF, DOCX, PPTX, TXT or MD · up to 50 MB. Files stay in your private library. Notes must be supported by primary guidelines.</p><a href="/admin/study/chapter/">Manage chapters and page ranges →</a></details>
+
+<section class="section" id="history" aria-labelledby="history-heading"><div class="section-title"><h2 id="history-heading">Recent runs</h2><a href="/admin/study/generationjob/">All runs →</a></div>
+{% for job in jobs %}<article class="run-card" id="job-{{ job.pk }}"><div class="run-heading"><div><p class="eyebrow">{{ job.get_kind_display }} · {{ job.created_at|date:'j M, H:i' }}</p><h3>{{ job.chapter.title }}</h3></div><span class="badge">{{ job.get_status_display }}</span></div>
+  <div class="run-summary"><p><strong>{{ job.cost.spent|floatformat:2 }} NOK</strong><span>recorded spend</span></p>
+    {% if job.kind == 'questions' %}<p><strong>{{ job.published }}</strong><span>published · {{ job.unfinished_count }} unfinished</span></p>{% endif %}
+    <p><strong>{% if job.spend_limit_nok != None %}{{ job.spend_limit_nok|floatformat:2 }} NOK{% else %}Not set{% endif %}</strong><span>original run cap</span></p>
+  </div>
+  {% if job.cost.reserved or job.cost.uncertain %}<p class="small muted">{{ job.cost.reserved|floatformat:2 }} NOK reserved · {{ job.cost.uncertain|floatformat:2 }} NOK unconfirmed</p>{% endif %}
+  {% if job.unit_cost != None %}<p class="small muted">{{ job.unit_cost|floatformat:2 }} NOK per published question for this run · source preparation excluded</p>{% endif %}
+  {% if job.unfinished_count and job.status == 'failed' %}
+    {% if job.can_resume %}<form method="post">{% csrf_token %}<input type="hidden" name="action" value="resume_questions"><input type="hidden" name="job_id" value="{{ job.pk }}"><button class="button secondary" {% if not enabled %}disabled{% endif %}>Finish saved questions</button></form><p class="small muted">Up to {{ job.available|floatformat:2 }} NOK available within the original cap. A full check reservation must fit before it starts.</p>
+    {% else %}<p class="small muted">{{ job.resume_reason }}</p>{% endif %}
+  {% endif %}
+  <details><summary>Cost breakdown & run details</summary><dl class="cost-breakdown">{% for row in job.cost.categories %}<div><dt>{{ row.label }}</dt><dd>{{ row.spent|floatformat:2 }} NOK</dd></div>{% empty %}<div><dt>No recorded API work</dt><dd>0.00 NOK</dd></div>{% endfor %}</dl>
+    {% if job.message %}<p class="small muted">{{ job.message }}</p>{% endif %}<p class="small muted">Requested: {{ job.count }}{% if job.kind == 'questions' %} questions · {{ job.quarantined }} held in this run{% else %} work batches{% endif %}. {{ job.generator_model }}{% if job.reviewer_model %} / {{ job.reviewer_model }}{% endif %}</p>
+  </details>
+</article>{% empty %}<p class="empty-state">Your runs and their costs will appear here.</p>{% endfor %}</section>
+{% endblock %}

@@ -15,6 +15,19 @@ def queue_saved_questions(job_id,user):
         raise ValidationError('An unsettled API call must be reconciled before continuing; it will not be retried automatically.')
     if job.spend_limit_nok is None:
         raise ValidationError('This older job has no explicit cost cap. Set a cap before continuing.')
+    from .models import ApiBudget, Source
+    from .studio_summary import tally, review_credit
+    calls=list(job.calls.all())
+    cost=tally(calls)
+    prepaid=review_credit(job,calls)
+    budget=ApiBudget.objects.filter(pk=1).first()
+    if cost['missing_usage']:
+        raise ValidationError('An earlier request has no confirmed usage. Its reservation must be reconciled before continuing.')
+    if cost['committed']>job.spend_limit_nok or (not prepaid and (
+            cost['committed']==job.spend_limit_nok or (budget is not None and budget.remaining<=0))):
+        raise ValidationError('No allowance is available within this run’s original cap.')
+    if not Source.objects.for_study().filter(pk=job.chapter.source_id,kind='guideline').exists():
+        raise ValidationError('This source is no longer the active main copy.')
     if not Question.objects.filter(verification__provenance__job_id=str(job.pk),status='quarantined',
         verification__state__in=['awaiting_independent_review','checked_pending_publication']).exists():
         raise ValidationError('This job has no unfinished saved drafts. Rejected questions are not automatically retried.')

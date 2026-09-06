@@ -73,3 +73,16 @@
     }});
   addEventListener('pagehide',() => lifecycle.abort(),{once:true});
 })();
+
+// Open a collapsed Studio section when following its in-page link.
+(() => {
+  const reveal = hash => {
+    const section = document.getElementById(hash.slice(1));
+    if (section?.tagName === 'DETAILS') section.open = true;
+  };
+  reveal(location.hash);
+  addEventListener('hashchange', () => reveal(location.hash));
+  document.querySelectorAll('.studio-links a[href^="#"], .studio-next a[href^="#"]').forEach(link => {
+    link.addEventListener('click', () => reveal(link.hash));
+  });
+})();

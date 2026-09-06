@@ -238,7 +238,7 @@ def source_file(request,source_id):
 @staff_member_required(login_url='/login/')
 def studio(request):
     import_form=ImportForm()
-    generate_form=GenerateForm()
+    generate_form=GenerateForm(initial={'chapter':request.GET.get('chapter')})
     if request.method=='POST':
         if request.POST.get('action')=='import':
             import_form=ImportForm(request.POST,request.FILES)
@@ -283,19 +283,30 @@ def studio(request):
                 elif GenerationJob.objects.filter(status__in=['queued','running']).count()>=5:
                     generate_form.add_error(None,'Let the existing generation jobs finish before adding more.')
                 else:
-                    GenerationJob.objects.create(requested_by=request.user,**generate_form.cleaned_data)
+                    GenerationJob.objects.create(requested_by=request.user,audit={'question_pipeline':'compact-2'},**generate_form.cleaned_data)
                     messages.success(request,'Generation queued. Questions that pass source validation and an independent AI check are published automatically.')
                     return redirect('studio')
     budget,_=ApiBudget.objects.get_or_create(pk=1)
+    from .studio_summary import cost_summary, next_step
+    costs=cost_summary(budget)
+    step=next_step(costs,request.user)
+    from .completion_estimate import completion_estimate
+    estimate=completion_estimate(costs)
+    if not generate_form.is_bound and not request.GET.get('chapter') and step.get('kind')=='generate':
+        generate_form.initial['chapter']=step['chapter'].pk
+    jobs=costs['jobs'][:10]
+    if step.get('job') and step['job'] not in jobs:
+        jobs=[step['job'],*jobs]
     return render(request,'study/studio.html',{'import_form':import_form,'generate_form':generate_form,
-        'jobs':GenerationJob.objects.select_related('chapter').order_by('-created_at')[:15],
+        'jobs':jobs,'costs':costs,'next_step':step,'estimate':estimate,
         'budget':budget,'enabled':settings.AI_GENERATION_ENABLED and bool(settings.OPENAI_API_KEY),
         'published':Question.objects.filter(status='published').count(),'quarantined':Question.objects.filter(status='quarantined').count(),'nav':'studio'})
 
 
 @staff_member_required(login_url='/login/')
 def coverage_view(request):
-    form=MappingForm(request.POST or None, initial={'chapter':request.GET.get('chapter'),'notes_source':request.GET.get('notes')})
+    form=MappingForm(request.POST or None, initial={'chapter':request.GET.get('chapter'),'notes_source':request.GET.get('notes'),
+        'kind':request.GET.get('kind','map'),'retry_blocked':request.GET.get('retry')=='1'})
     models=ModelPairForm(request.GET or None)
     comparison={}
     if models.is_bound and models.is_valid():

@@ -65,7 +65,7 @@ class GenerateForm(ModelPairForm):
     notes_source = forms.ModelChoiceField(queryset=Source.objects.for_study().filter(kind='notes'),required=False,
         label='Focus on specific notes',empty_label='Use relevant linked notes',
         help_text='Optional. Questions use this file for teaching ideas and the selected guideline for evidence.')
-    count = forms.TypedChoiceField(choices=[(n,str(n)) for n in (5,10,20,50)],coerce=int,initial=5)
+    count = forms.TypedChoiceField(choices=[(n,str(n)) for n in (5,10,20,50)],coerce=int,initial=5,label='Questions to request')
 
     def clean(self):
         data=super().clean()
