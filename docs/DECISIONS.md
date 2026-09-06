@@ -17,7 +17,7 @@ Admin can import PDF/DOCX/PPTX/TXT/MD sources, add/rename chapters, generate que
 
 Question types must include direct knowledge and interpretation as well as clinical cases, to cover the entire curriculum. Coverage is measured by learning objectives/chapters, not just total question count. Imported sources are only a subset of the EAPC curriculum; show unrepresented domains explicitly and do not claim exam readiness.
 
-Recommended: GPT-6 Astra high reasoning for generation, GPT-5.6 Sol high reasoning for independent verification, using Flex processing. No automatic paid retries or fallback to a more expensive tier. Both model availability and pricing must be checked for the configured account before use.
+Updated 2026-09-06 after the pilot: GPT-5.6 Terra high reasoning for question generation and GPT-5.6 Sol for separate blind answer / rationale verification, using Flex processing. GPT-6 Astra remains the default for the one-time learning-objective inventory, with Sol reviewing that inventory. Separate calls by the same model can share systematic errors; source checks and quarantine remain mandatory. No automatic paid retries or fallback to a more expensive tier. Both model availability and pricing must be checked for the configured account before use.
 
 Official list prices checked 2026-09-06, USD per million tokens, contexts below 272K:
 
@@ -25,6 +25,7 @@ Official list prices checked 2026-09-06, USD per million tokens, contexts below 
 | --- | --- | --- |
 | GPT-6 Astra | 10 / 50 | 5 / 25 |
 | GPT-5.6 Sol | 4 / 20 | 2 / 10 |
+| GPT-5.6 Terra | 2 / 12 | 1 / 6 |
 
 Source: https://developers.openai.com/api/docs/pricing
 Sol promotional pricing is documented at least through 2026-11-21. Recheck after this date. Cache writes may cost 1.25x input price. Reasoning tokens are billable output tokens. No cache savings are assumed in the estimate.

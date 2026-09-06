@@ -15,7 +15,8 @@ from .sources import validate_references, normalize
 
 # USD per million tokens, short context, checked 2026-09-06.
 PRICES = {'gpt-6-astra': {'flex':(5,25),'default':(10,50)},
-          'gpt-5.6-sol': {'flex':(2,10),'default':(4,20)}}
+          'gpt-5.6-sol': {'flex':(2,10),'default':(4,20)},
+          'gpt-5.6-terra': {'flex':(1,6),'default':(2,12)}}
 MILLION=Decimal('1000000')
 
 
@@ -35,6 +36,8 @@ class Reference(StrictModel):
 
 
 class DraftQuestion(StrictModel):
+    objective_id: int
+    testing_angle: str
     stem: str
     choices: list[Choice]
     answer: int
@@ -62,6 +65,15 @@ class Verdict(StrictModel):
 
 class ReviewBatch(StrictModel):
     verdicts: list[Verdict]
+
+
+class NoveltyVerdict(Verdict):
+    objective_matches: bool
+    adds_distinct_testing_angle: bool
+
+
+class NoveltyReviewBatch(StrictModel):
+    verdicts: list[NoveltyVerdict]
 
 
 class BudgetError(Exception):
@@ -190,6 +202,12 @@ def source_context(chapter):
 
 
 def run_job(job):
+    if job.kind == 'map':
+        from .mapping import run_mapping_job
+        return run_mapping_job(job)
+    from .coverage import plan_targets, record_failed_objective, question_catalog
+    generator_model=job.generator_model or settings.AI_GENERATOR_MODEL
+    reviewer_model=job.reviewer_model or settings.AI_REVIEWER_MODEL
     chapter=job.chapter
     if chapter.source.kind!='guideline' or not chapter.source.active:
         raise ValidationError('Generate from an active authoritative guideline, not study notes.')
@@ -200,9 +218,19 @@ def run_job(job):
             raise ValidationError('Selected notes must be active and linked to this guideline.')
     remaining=job.count
     while remaining>0:
-        count=min(5,remaining)
-        pages=source_context(chapter)
-        existing=list(chapter.questions.values_list('learning_point',flat=True))
+        # Re-plan after each batch. Jobs queued earlier cannot exceed a ceiling
+        # reached by a more recent publication or source retirement.
+        targets=plan_targets(chapter, job.strategy, min(5,remaining),job.notes_source)
+        if not targets:
+            job.message='No eligible learning objectives remain for this plan. Generation stopped without another API call.'
+            job.save(update_fields=['message'])
+            break
+        count=len(targets)
+        target_map={obj.pk:obj for obj in targets}
+        required_ids={r['page_id'] for obj in targets for ev in obj.evidence.filter(chapter=chapter) for r in ev.references}
+        pages=[{'page_id':p.pk,'pdf_page':p.number,'text':p.text} for p in chapter.source.pages.filter(pk__in=required_ids,number__gte=chapter.first_page,number__lte=chapter.last_page)]
+        if not pages or {p['page_id'] for p in pages}!=required_ids or sum(len(p['text']) for p in pages)>70000:
+            raise ValidationError('Objective evidence is missing or exceeds the request limit. Narrow the chapter/objective plan.')
         context={'guideline':chapter.source.title,'year':chapter.source.year,'doi':chapter.source.doi,
                  'chapter':chapter.title,'pages':pages}
         notes=[]
@@ -218,28 +246,33 @@ def run_job(job):
             excerpt=text[:8000-note_size]
             notes.append({'title':title,'source_id':note_id,'sha256':note_hash,'page_id':page_id,'unverified_study_notes':excerpt})
             note_size+=len(excerpt)
-        prompt=json.dumps({'count':count,'existing_learning_points':existing[-100:],'source':context,'unverified_study_notes':notes})
-        batch=ask_model(job,settings.AI_GENERATOR_MODEL,'generate',GENERATOR_INSTRUCTIONS,prompt,DraftBatch,16000)
+        catalog=question_catalog()
+        prompt=json.dumps({'count':count,'planned_objectives':[{'id':o.pk,'title':o.title,'allowed_angles':o.depth_reason} for o in targets],
+                           'existing_questions':catalog,'source':context,'unverified_study_notes':notes})
+        batch=ask_model(job,generator_model,'generate',GENERATOR_INSTRUCTIONS+'\nGenerate at most ONE question per supplied planned objective, using its exact objective_id. Do not invent or substitute objective IDs. Describe its testing_angle. Compare with ALL existing questions across documents; cosmetic changes, another patient age or synonyms do not create a distinct testing angle. Return zero questions for objectives where no useful new angle remains.',prompt,DraftBatch,16000)
         if len(batch.questions)>count:
             raise ValidationError('The generator returned more questions than requested.')
-        if not batch.questions:
-            raise ValidationError('The supplied text did not support further distinct questions.')
         candidates=[]
+        attempted=set()
+        old=list(Question.objects.exclude(status='retired').values_list('stem',flat=True))
         for draft in batch.questions:
             payload=draft.model_dump()
-            q=Question(chapter=chapter,topic=chapter.topic,**payload,generated_by=settings.AI_GENERATOR_MODEL,
+            if draft.objective_id not in target_map or draft.objective_id in attempted:
+                raise ValidationError('The generator returned an unplanned or repeated learning objective.')
+            attempted.add(draft.objective_id)
+            q=Question(chapter=chapter,topic=chapter.topic,**payload,generated_by=generator_model,
                 verification={'provenance':{'source_id':chapter.source_id,'sha256':chapter.source.sha256,
                     'year':chapter.source.year,'doi':chapter.source.doi,'chapter_id':chapter.id,
                     'context_page_ids':[p['page_id'] for p in pages],
                     'note_source_ids':sorted({n['source_id'] for n in notes}),
                     'note_pages':[{k:n[k] for k in ('source_id','sha256','page_id')} for n in notes],
-                    'job_id':str(job.id),'prompt_version':'2026-09-06.2'}})
+                    'job_id':str(job.id),'prompt_version':'2026-09-06.coverage-1'}})
             try:
                 q.clean()
                 validate_references(payload['references'],{p['page_id'] for p in pages})
-                old=list(chapter.questions.values_list('stem',flat=True))
                 if any(SequenceMatcher(None,normalize(q.stem),normalize(s)).ratio()>.9 for s in old):
                     raise ValidationError('Near-duplicate question.')
+                old.append(q.stem)
                 candidates.append(q)
             except ValidationError as e:
                 q.verification={**q.verification,'structure_passed':False,'reason':' '.join(e.messages)}
@@ -250,7 +283,13 @@ def run_job(job):
                     q.clean();q.save();job.quarantined+=1
                 except (ValidationError,IntegrityError):
                     pass
-            remaining-=1
+                record_failed_objective(target_map[draft.objective_id], 'Repeated structure, source or duplication failures. Review before generating again.')
+        for obj in targets:
+            if obj.pk not in attempted:
+                record_failed_objective(obj, 'The generator found no supported, distinct testing angle. Review the objective before trying again.')
+        # A requested slot is consumed even if no draft was returned. Do not loop
+        # indefinitely on an objective that the model cannot support.
+        remaining-=count
         if candidates:
             # Keep generated drafts even if a later paid check fails or runs out
             # of budget; they remain quarantined until a complete verification.
@@ -264,15 +303,18 @@ def run_job(job):
                 blind.append({'index':i,'stem':q.stem,'choices':[c['text'] for c in q.choices],
                     'references':q.references})
             review_prompt=json.dumps({'source':context,'questions':blind})
-            review=ask_model(job,settings.AI_REVIEWER_MODEL,'blind-review',REVIEWER_INSTRUCTIONS,review_prompt,ReviewBatch,8000)
+            review=ask_model(job,reviewer_model,'blind-review',REVIEWER_INSTRUCTIONS,review_prompt,ReviewBatch,8000)
             verdicts={v.index:v for v in review.verdicts}
             if len(review.verdicts)!=len(candidates) or set(verdicts)!=set(range(len(candidates))):
                 raise ValidationError('Independent reviewer returned incomplete or duplicate verdicts.')
             # A separate review of the full rationale preserves the blindness of
             # the answer check; an answer agreement alone cannot validate explanations.
-            rationale_prompt=json.dumps({'source':context,'questions':[{'index':i,'stem':q.stem,'choices':q.choices,
+            rationale_prompt=json.dumps({'source':context,'existing_questions':catalog,
+                'planned_objectives':[{'id':o.pk,'title':o.title,'allowed_angles':o.depth_reason} for o in targets],
+                'questions':[{'index':i,'stem':q.stem,'choices':q.choices,'objective_id':q.objective_id,
+                'testing_angle':q.testing_angle,'learning_point':q.learning_point,
                 'explanation':q.explanation,'references':q.references} for i,q in enumerate(candidates)]})
-            rationale=ask_model(job,settings.AI_REVIEWER_MODEL,'rationale-review',REVIEWER_INSTRUCTIONS,rationale_prompt,ReviewBatch,8000)
+            rationale=ask_model(job,reviewer_model,'rationale-review',REVIEWER_INSTRUCTIONS+'\nAlso check objective_matches and adds_distinct_testing_angle against every saved question AND every other candidate in this batch, across documents. Match the precise learning objective, not just its broad topic. Mere rewording or changed patient details is not a distinct testing angle. Reject duplicates even when medically correct.',rationale_prompt,NoveltyReviewBatch,8000)
             rationale_map={v.index:v for v in rationale.verdicts}
             if len(rationale.verdicts)!=len(candidates) or set(rationale_map)!=set(range(len(candidates))):
                 raise ValidationError('Explanation review did not cover every candidate.')
@@ -281,17 +323,30 @@ def run_job(job):
                 passed=(first.best_answer==q.answer==second.best_answer and all([
                     first.single_best_answer,first.evidence_supports_answer,first.reference_section_accurate,first.within_source_scope,
                     second.single_best_answer,second.evidence_supports_answer,second.reference_section_accurate,
-                    second.explanations_accurate,second.within_source_scope]))
+                    second.explanations_accurate,second.within_source_scope,
+                    second.objective_matches,second.adds_distinct_testing_angle]))
                 q.verification={**q.verification,'state':'reviewed','blind_review':first.model_dump(),'rationale_review':second.model_dump(),
-                                'reviewer':settings.AI_REVIEWER_MODEL,'source_checked':True}
+                                'reviewer':reviewer_model,'source_checked':True}
                 q.status='published' if passed else 'quarantined'
                 supplied_ids=[chapter.source_id]+q.verification['provenance']['note_source_ids']
                 if Source.objects.filter(pk__in=supplied_ids,active=False).exists():
                     q.status='retired'
                     passed=False
                     q.verification['state']='source_retired_during_generation'
-                q.full_clean(exclude=['fingerprint'])
-                q.save()
+                with transaction.atomic():
+                    obj=target_map[q.objective_id]
+                    obj.refresh_from_db()
+                    active_count=obj.questions.filter(status='published',chapter__source__active=True).count()
+                    if passed and (not obj.active or obj.blocked_reason or active_count>=obj.variant_limit):
+                        q.status='quarantined';passed=False
+                        q.verification['state']='objective_limit_or_state_changed'
+                    q.full_clean(exclude=['fingerprint'])
+                    q.save()
+                    if passed:
+                        obj.failed_attempts=0
+                        obj.save(update_fields=['failed_attempts'])
+                    elif q.status!='retired':
+                        record_failed_objective(obj, 'Repeated review failures or overlapping testing angles. Review this objective before trying again.')
                 if passed: job.published+=1
                 else: job.quarantined+=1
         job.save(update_fields=['published','quarantined'])

@@ -24,7 +24,8 @@ class Command(BaseCommand):
                 try:
                     run_job(job)
                     job.status='complete'
-                    job.message='Generation and independent checks complete.'
+                    if not job.message:
+                        job.message='Generation and independent checks complete.'
                 except (BudgetError,ValidationError) as e:
                     job.status='failed'
                     job.message=' '.join(e.messages) if isinstance(e,ValidationError) else str(e)

@@ -15,6 +15,7 @@ urlpatterns=[
     path('exam/',views.exam,name='exam'),path('progress/',views.progress_view,name='progress'),
     path('library/',views.library,name='library'),path('library/<int:source_id>/file/',views.source_file,name='source_file'),
     path('studio/',views.studio,name='studio'),path('admin/',admin.site.urls),
+    path('studio/coverage/',views.coverage_view,name='coverage'),
     path('studio/sources/<int:source_id>/',views.source_setup,name='source_setup'),
     path('sessions/<uuid:session_id>/',views.session_view,name='session'),
     path('sessions/<uuid:session_id>/answer/<int:position>/',views.answer,name='answer'),

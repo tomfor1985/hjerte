@@ -3,6 +3,7 @@ import uuid
 from decimal import Decimal
 from django.conf import settings
 from django.core.exceptions import ValidationError
+from django.core.validators import MinValueValidator, MaxValueValidator
 from django.db import models
 from django.utils import timezone
 
@@ -82,6 +83,47 @@ class Chapter(models.Model):
         return f'{self.source.year or ""} · {self.title}'
 
 
+class LearningObjective(models.Model):
+    title = models.CharField(max_length=400)
+    topic = models.ForeignKey(Topic, on_delete=models.PROTECT)
+    variant_limit = models.PositiveSmallIntegerField(default=1, validators=[MinValueValidator(1), MaxValueValidator(3)])
+    depth_reason = models.TextField(blank=True)
+    failed_attempts = models.PositiveSmallIntegerField(default=0)
+    blocked_reason = models.TextField(blank=True)
+    active = models.BooleanField(default=True)
+
+    def clean(self):
+        if self.variant_limit > 1 and not self.depth_reason.strip():
+            raise ValidationError('Explain what additional testing angles are useful before allowing variants.')
+
+    class Meta:
+        constraints = [models.CheckConstraint(condition=models.Q(variant_limit__gte=1, variant_limit__lte=3), name='objective_max_three')]
+
+    def __str__(self):
+        return self.title
+
+
+class ObjectiveEvidence(models.Model):
+    objective = models.ForeignKey(LearningObjective, on_delete=models.CASCADE, related_name='evidence')
+    chapter = models.ForeignKey(Chapter, on_delete=models.CASCADE, related_name='objective_evidence')
+    references = models.JSONField(default=list)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['objective', 'chapter'], name='objective_chapter_evidence')]
+
+
+class CoverageSegment(models.Model):
+    page = models.ForeignKey(SourcePage, on_delete=models.CASCADE, related_name='coverage_segments')
+    start = models.PositiveIntegerField()
+    end = models.PositiveIntegerField()
+    digest = models.CharField(max_length=64)
+    status = models.CharField(max_length=16, default='pending', choices=[('pending', 'Not mapped'), ('mapped', 'Mapped'), ('blocked', 'Needs review')])
+    audit = models.JSONField(default=dict)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['page', 'start', 'digest'], name='unique_coverage_segment')]
+
+
 class Question(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     chapter = models.ForeignKey(Chapter, on_delete=models.PROTECT, related_name='questions')
@@ -91,6 +133,8 @@ class Question(models.Model):
     answer = models.PositiveSmallIntegerField(help_text='Correct option index, 0 to 4.')
     explanation = models.TextField()
     learning_point = models.TextField()
+    objective = models.ForeignKey(LearningObjective, on_delete=models.PROTECT, null=True, blank=True, related_name='questions')
+    testing_angle = models.TextField(blank=True)
     references = models.JSONField(default=list, help_text='Page ID, section and supporting quote for each reference.')
     difficulty = models.CharField(max_length=12, choices=[('basic', 'Basic'), ('applied', 'Applied'), ('advanced', 'Advanced')], default='applied')
     question_type = models.CharField(max_length=16, choices=[('case', 'Clinical case'), ('direct', 'Direct knowledge'), ('interpretation', 'Interpretation')], default='case')
@@ -190,6 +234,10 @@ class GenerationJob(models.Model):
     chapter = models.ForeignKey(Chapter, on_delete=models.PROTECT)
     notes_source = models.ForeignKey(Source,on_delete=models.PROTECT,null=True,blank=True,related_name='note_generation_jobs')
     count = models.PositiveIntegerField(default=5)
+    kind = models.CharField(max_length=16, default='questions', choices=[('questions', 'Questions'), ('map', 'Map learning objectives')])
+    strategy = models.CharField(max_length=16, default='coverage', choices=[('coverage', 'Increase coverage'), ('variants', 'Add useful variants')])
+    generator_model = models.CharField(max_length=80, blank=True)
+    reviewer_model = models.CharField(max_length=80, blank=True)
     status = models.CharField(max_length=20, default='queued', choices=[('queued', 'Queued'), ('running', 'Running'), ('complete', 'Complete'), ('failed', 'Failed')])
     published = models.PositiveIntegerField(default=0)
     quarantined = models.PositiveIntegerField(default=0)

@@ -1,0 +1,39 @@
+{% extends 'base.html' %}{% block content %}
+<header class="page-head"><div><p class="eyebrow">QUESTION STUDIO · COVERAGE</p><h1>Cover the content. Then add depth.</h1></div><a class="button secondary" href="/studio/">Back to Studio</a></header>
+<div class="studio-stats"><span><strong>{{ report.covered }} / {{ report.total }}</strong>mapped objectives with a published question</span><span><strong>{{ report.unclassified }}</strong>published questions awaiting classification</span><span><strong>{{ report.blocked }}</strong>objectives needing review</span></div>
+<p class="notice">{% if report.mapping_complete %}The active documents have been inventoried. Coverage refers to the identified learning objectives in these editions.{% else %}Inventory in progress. These counts cover only mapped objectives. Unmapped or unresolved material is still missing from the denominator.{% endif %} Document coverage is separate from complete EAPC curriculum coverage or your mastery of the material.</p>
+<div class="studio-grid">
+<section class="panel"><h2>Cost to fill the gaps</h2><form method="get">{{ model_form.as_p }}<button class="button secondary">Compare costs · no API use</button></form>
+{% with f=report.forecast %}
+<p class="muted">{% if f.complete %}Estimate for the mapped active library.{% else %}Provisional estimate for known objectives only. The total library cost is not yet known.{% endif %}</p>
+{% if report.total %}<div class="coverage-row"><span>Basic coverage · one question per objective</span><strong>{{ f.basic_missing }} missing</strong></div>
+<div class="coverage-row"><span>Useful depth · selected ceilings of 1–3</span><strong>{{ f.extended_missing }} missing</strong></div>{% endif %}
+{% if f.unit != None and report.total %}
+<p class="cost-estimate"><strong>{{ f.basic|floatformat:0 }}–{{ f.basic_with_reserve|floatformat:0 }} NOK</strong><br><span class="small muted">Basic coverage · question production</span></p>
+<p><strong>{{ f.extended|floatformat:0 }}–{{ f.extended_with_reserve|floatformat:0 }} NOK</strong><br><span class="small muted">Including useful depth · alternative total, not added to basic coverage</span></p>
+{% else %}<p class="notice">Map learning objectives first. An empty inventory does not mean that completing the library is free.</p>{% endif %}
+<details><summary>Cost assumptions &amp; models</summary>{% if f.unit != None %}<p class="small muted">Based on {{ f.sample }} published questions and {{ f.measured|floatformat:2 }} NOK of settled token-cost estimates: {{ f.unit|floatformat:2 }} NOK per published question, including rejected candidates. Upper figure adds a 50% planning reserve; it is not a guaranteed maximum. The new overlap checks and harder remaining material may cost more.</p>{% else %}<p class="small muted">No measured question-production rate is available yet.</p>{% endif %}
+{% if f.repriced != None %}<p class="small muted">Selected-model scenario: {{ f.planning_unit|floatformat:2 }} NOK per published question, repricing the observed tokens for {{ f.generator }} generation and {{ f.reviewer }} verification. The figures above use this scenario. Token use and approval rate may change; this is not a measured result for the new configuration.</p>{% endif %}
+<p class="small muted">Models: {{ f.generator }} for questions, {{ f.reviewer }} for blind answer and rationale checks, {{ f.mapper }} for the objective inventory. All use high reasoning. Different models can still share errors; using the same model is also allowed.</p>
+<p class="small muted">Mapping: {{ f.segments_remaining }} text segments remain, approximately {{ f.batches_remaining }} compact batches (chapter boundaries and unresolved material can add work). {% if f.mapping_remaining != None %}Approximately {{ f.mapping_remaining|floatformat:2 }} NOK at the observed mapping rate, before unresolved-source work and a reserve.{% else %}A mapping-cost estimate becomes available after the first measured mapping calls.{% endif %} Mapping already accounted: {{ f.map_spend|floatformat:2 }} NOK.</p>
+<p class="small muted">Uncertain or pending API reservations: {{ f.uncertain|floatformat:2 }} NOK, kept separately. Prices, model choice and verification yield can change these estimates.</p></details>
+{% endwith %}
+<p class="notice">{{ budget.remaining|floatformat:2 }} NOK remains of the approved {{ budget.allowance_nok }} NOK. This forecast does not increase the allowance. Every API request must fit inside the remaining budget.</p>
+</section>
+<section class="panel"><h2>Map the next part</h2><p class="muted">Build a source-backed inventory before generating more questions. Shared concepts reuse the same objective across documents. An independent check reviews coverage, evidence and existing-question links.</p>
+<form method="post">{% csrf_token %}{{ form.as_p }}<button class="button primary" {% if not enabled %}disabled{% endif %}>Map & verify</button></form>
+<p class="small muted">This action uses the approved API allowance. It processes only the selected number of compact mapping batches and stops. It does not generate questions. Reading this page and importing files are free.</p>
+<p class="small muted">For notes, choose the guideline chapter that supports their content. Claims without primary evidence stay unresolved; try another relevant chapter only after reviewing the failed mapping.</p>
+</section></div>
+<section class="section"><h2>Document inventory</h2>
+{% for d in report.documents %}<div class="source-row"><div><span class="badge">{{ d.source.get_kind_display }}</span><h3>{{ d.source.title }}</h3><p>{{ d.mapped }} / {{ d.total }} text segments mapped · {{ d.blocked }} need review</p>
+{% if d.gaps %}<p class="small incorrect">{{ d.gaps }} pages are outside the configured chapters. Add page ranges in source setup to include them.</p>{% endif %}
+{% if d.missing_pages %}<p class="small incorrect">{{ d.missing_pages }} pages have no extracted record. Check the import.</p>{% endif %}
+{% if d.notes %}<p class="small muted">Ideas from these notes count only after verification against a primary guideline.</p>{% endif %}
+</div><a class="button secondary" href="{% url 'source_setup' d.source.pk %}">Source setup</a></div>{% empty %}<p class="empty-state">Import documents to start a coverage inventory.</p>{% endfor %}
+<p><a href="/admin/study/coveragesegment/">Inspect unresolved text and mapping evidence →</a></p></section>
+<section class="section"><div class="section-title"><h2>Learning objectives</h2><a href="/admin/study/learningobjective/">Manage depth & review stops →</a></div>
+<p class="small muted">One question is the default. Two or three require distinct useful angles. Reaching the ceiling stops generation; two failed attempts pause an objective for review. Mistakes during practice trigger repetition, not new variants.</p>
+{% for row in report.objectives %}<div class="list-row objective-row"><div><strong>{{ row.objective.title }}</strong><span class="small muted">{{ row.count }} published · ceiling {{ row.objective.variant_limit }} · {{ row.objective.topic.title }}</span>{% if row.objective.depth_reason %}<details><summary class="small">Testing angles</summary><p class="small muted">{{ row.objective.depth_reason|linebreaksbr }}</p></details>{% endif %}{% if row.blocked %}<p class="small incorrect">{{ row.objective.blocked_reason }}</p>{% endif %}</div><span class="badge">{{ row.state }}</span></div>{% empty %}<p class="empty-state">No verified objective inventory yet. Existing questions remain available for practice.</p>{% endfor %}
+{% if report.unclassified %}<p><a href="/admin/study/question/?objective__isnull=True">Review existing questions awaiting classification →</a></p>{% endif %}
+</section>{% endblock %}

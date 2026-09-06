@@ -18,10 +18,11 @@ from django.utils.http import url_has_allowed_host_and_scheme
 from django.views.decorators.http import require_POST
 from .engine import (available_questions, coverage_summary, start_session, save_answer, finish_session,
                      synchronize_clock, public_item, PART_SECONDS)
-from .forms import PracticeForm, ImportForm, GenerateForm, ChapterFormSet, NotesSourcesForm
+from .forms import PracticeForm, ImportForm, GenerateForm, ChapterFormSet, NotesSourcesForm, MappingForm, ModelPairForm
 from .models import (Topic, Source, SourcePage, Chapter, Question, StudySession, SessionItem,
                      QuestionProgress, GenerationJob, ApiBudget, LoginThrottle)
 from .sources import import_source, retire_source
+from .coverage import coverage_report, plan_targets
 
 
 def login_view(request):
@@ -254,6 +255,14 @@ def studio(request):
         elif request.POST.get('action')=='generate':
             generate_form=GenerateForm(request.POST)
             if generate_form.is_valid():
+                try:
+                    data=generate_form.cleaned_data
+                    targets=plan_targets(data['chapter'],data['strategy'],data['count'],data['notes_source'])
+                    if not targets:
+                        raise ValidationError('No eligible learning objectives remain. This plan has reached its target or needs review.')
+                except ValidationError as e:
+                    generate_form.add_error(None,e)
+            if generate_form.is_valid():
                 budget,_=ApiBudget.objects.get_or_create(pk=1)
                 if not settings.AI_GENERATION_ENABLED or not settings.OPENAI_API_KEY:
                     generate_form.add_error(None,'Generation is not enabled yet. Configure the approved API key and allowance first.')
@@ -270,6 +279,31 @@ def studio(request):
         'jobs':GenerationJob.objects.select_related('chapter').order_by('-created_at')[:15],
         'budget':budget,'enabled':settings.AI_GENERATION_ENABLED and bool(settings.OPENAI_API_KEY),
         'published':Question.objects.filter(status='published').count(),'quarantined':Question.objects.filter(status='quarantined').count(),'nav':'studio'})
+
+
+@staff_member_required(login_url='/login/')
+def coverage_view(request):
+    form=MappingForm(request.POST or None, initial={'chapter':request.GET.get('chapter'),'notes_source':request.GET.get('notes')})
+    models=ModelPairForm(request.GET or None)
+    comparison={}
+    if models.is_bound and models.is_valid():
+        comparison={'generator':models.cleaned_data['generator_model'],'reviewer':models.cleaned_data['reviewer_model']}
+    budget,_=ApiBudget.objects.get_or_create(pk=1)
+    enabled=settings.AI_GENERATION_ENABLED and bool(settings.OPENAI_API_KEY)
+    if request.method=='POST' and form.is_valid():
+        if not enabled:
+            form.add_error(None,'AI mapping is disabled. Reading the coverage plan does not use the API.')
+        elif budget.remaining<=0:
+            form.add_error(None,'The approved API allowance is exhausted.')
+        elif GenerationJob.objects.filter(status__in=['queued','running']).count()>=5:
+            form.add_error(None,'Let the existing jobs finish before adding another.')
+        else:
+            GenerationJob.objects.create(requested_by=request.user,kind='map',generator_model=settings.AI_MAPPING_MODEL,
+                reviewer_model=settings.AI_REVIEWER_MODEL,**form.cleaned_data)
+            messages.success(request,'Mapping queued within the existing allowance. No questions will be generated automatically.')
+            return redirect('coverage')
+    return render(request,'study/coverage.html',{'report':coverage_report(**comparison),'form':form,'model_form':models,
+        'budget':budget,'enabled':enabled,'nav':'studio'})
 
 
 @staff_member_required(login_url='/login/')
