@@ -65,6 +65,7 @@ def cost_summary(budget):
             unfinished[provenance.get('job_id')] += 1
     for job in jobs:
         job.cost = tally(by_job[job.pk])
+        job.display_status='Drafts ready' if job.status=='failed' and job.audit.get('authored_outside_api') and not job.started_at else job.get_status_display()
         job.has_unsettled_call = any(c.state in ('reserved', 'uncertain') for c in by_job[job.pk])
         job.cost['categories'] = [dict(key=key, label=label, **tally(c for c in by_job[job.pk] if category(c) == key))
                                   for key, label in CATEGORIES if any(category(c) == key for c in by_job[job.pk])]
@@ -83,7 +84,7 @@ def cost_summary(budget):
     totals['jobs'] = jobs
     totals['unfinished'] = sum(unfinished.values())
     totals['flows'] = []
-    for current, label in ((True, 'New question flow'), (False, 'Earlier or mixed question runs')):
+    for current, label in ((True, 'Mapped-objective API runs'), (False, 'Earlier or mixed question runs')):
         cohort = [job for job in jobs if job.kind == 'questions' and job.current_flow == current and job.audit.get('question_pipeline') not in ('authored-1','source-1')]
         cohort_calls = [call for job in cohort for call in by_job[job.pk]]
         published = sum(job.published for job in cohort)
