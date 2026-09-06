@@ -17,7 +17,7 @@ Admin can import PDF/DOCX/PPTX/TXT/MD sources, add/rename chapters, generate que
 
 Question types must include direct knowledge and interpretation as well as clinical cases, to cover the entire curriculum. Coverage is measured by learning objectives/chapters, not just total question count. Imported sources are only a subset of the EAPC curriculum; show unrepresented domains explicitly and do not claim exam readiness.
 
-Updated 2026-09-06 after the pilot: GPT-5.6 Terra high reasoning for question generation and GPT-5.6 Sol for separate blind answer / rationale verification, using Flex processing. GPT-6 Astra remains the default for the one-time learning-objective inventory, with Sol reviewing that inventory. Separate calls by the same model can share systematic errors; source checks and quarantine remain mandatory. No automatic paid retries or fallback to a more expensive tier. Both model availability and pricing must be checked for the configured account before use.
+Updated 2026-09-06 after the pilot: GPT-5.6 Terra high reasoning for question generation and GPT-5.6 Sol for separate blind answer / rationale verification, using Flex processing. GPT-5.6 Terra is also the default for source inventory and separate objective/question matching, with Sol checking each stage. Astra is an explicit option for difficult or unresolved material, not an automatic paid fallback. Separate calls by the same model can share systematic errors; source checks and quarantine remain mandatory. No automatic paid retries or fallback to a more expensive tier. Both model availability and pricing must be checked for the configured account before use.
 
 Official list prices checked 2026-09-06, USD per million tokens, contexts below 272K:
 

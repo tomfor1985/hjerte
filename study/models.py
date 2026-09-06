@@ -110,6 +110,9 @@ class LearningObjective(models.Model):
     failed_attempts = models.PositiveSmallIntegerField(default=0)
     blocked_reason = models.TextField(blank=True)
     active = models.BooleanField(default=True)
+    reconciliation_status = models.CharField(max_length=16,default='complete',choices=[('pending','Awaiting matching'),('complete','Matched'),('blocked','Needs review')])
+    reconciliation_audit = models.JSONField(default=dict,blank=True)
+    merged_into = models.ForeignKey('self',null=True,blank=True,on_delete=models.PROTECT,related_name='aliases')
 
     def clean(self):
         if self.variant_limit > 1 and not self.depth_reason.strip():
@@ -153,6 +156,7 @@ class Question(models.Model):
     explanation = models.TextField()
     learning_point = models.TextField()
     objective = models.ForeignKey(LearningObjective, on_delete=models.PROTECT, null=True, blank=True, related_name='questions')
+    objective_link_audit = models.JSONField(default=dict,blank=True)
     testing_angle = models.TextField(blank=True)
     references = models.JSONField(default=list, help_text='Page ID, section and supporting quote for each reference.')
     difficulty = models.CharField(max_length=12, choices=[('basic', 'Basic'), ('applied', 'Applied'), ('advanced', 'Advanced')], default='applied')
@@ -253,7 +257,12 @@ class GenerationJob(models.Model):
     chapter = models.ForeignKey(Chapter, on_delete=models.PROTECT)
     notes_source = models.ForeignKey(Source,on_delete=models.PROTECT,null=True,blank=True,related_name='note_generation_jobs')
     count = models.PositiveIntegerField(default=5)
-    kind = models.CharField(max_length=16, default='questions', choices=[('questions', 'Questions'), ('map', 'Map learning objectives')])
+    kind = models.CharField(max_length=16, default='questions', choices=[('questions', 'Questions'), ('map', 'Map learning objectives'), ('reconcile','Match learning objectives'), ('link_questions','Link existing questions')])
+    retry_blocked = models.BooleanField(default=False)
+    notes_first_location = models.PositiveIntegerField(null=True,blank=True)
+    notes_last_location = models.PositiveIntegerField(null=True,blank=True)
+    spend_limit_nok = models.DecimalField(max_digits=8,decimal_places=2,null=True,blank=True)
+    audit = models.JSONField(default=dict,blank=True)
     strategy = models.CharField(max_length=16, default='coverage', choices=[('coverage', 'Increase coverage'), ('variants', 'Add useful variants')])
     generator_model = models.CharField(max_length=80, blank=True)
     reviewer_model = models.CharField(max_length=80, blank=True)
@@ -292,6 +301,10 @@ class ApiCall(models.Model):
     actual_nok = models.DecimalField(max_digits=10, decimal_places=4, null=True)
     input_tokens = models.PositiveIntegerField(default=0)
     output_tokens = models.PositiveIntegerField(default=0)
+    cached_tokens = models.PositiveIntegerField(null=True,blank=True)
+    cache_write_tokens = models.PositiveIntegerField(null=True,blank=True)
+    reasoning_tokens = models.PositiveIntegerField(null=True,blank=True)
+    service_tier = models.CharField(max_length=16,blank=True)
     provider_response_id = models.CharField(max_length=160, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 

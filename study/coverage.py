@@ -24,12 +24,12 @@ def chapter_segments(chapter):
             number__lte=chapter.last_page) for s in segments_for(p)]
 
 
-def pack_segments(segments):
+def pack_segments(segments,limit=48000):
     """Amortize API overhead for short note paragraphs without dropping pages."""
     group, size = [], 0
     for segment in segments:
         length=len(segment['text'])
-        if group and (size+length>SEGMENT_SIZE or not segment['text'].strip()):
+        if group and (size+length>limit or not segment['text'].strip()):
             yield group
             group,size=[],0
         if not segment['text'].strip():
@@ -53,10 +53,10 @@ def objective_rows(chapter=None):
     rows = []
     for obj in objectives.prefetch_related('questions__chapter__source').order_by('id'):
         count = sum(q.status == 'published' and q.chapter.source.active for q in obj.questions.all())
-        blocked = bool(obj.blocked_reason) or obj.failed_attempts >= FAILURE_LIMIT
+        blocked = bool(obj.blocked_reason) or obj.failed_attempts >= FAILURE_LIMIT or obj.reconciliation_status!='complete'
         rows.append({'objective': obj, 'count': count, 'missing': int(count == 0),
                      'remaining': max(0, obj.variant_limit - count),
-                     'state': 'Needs review' if blocked else ('Target reached' if count >= obj.variant_limit else ('Uncovered' if count == 0 else 'Covered')),
+                     'state': 'Awaiting matching' if obj.reconciliation_status=='pending' else ('Needs review' if blocked else ('Target reached' if count >= obj.variant_limit else ('Uncovered' if count == 0 else 'Covered'))),
                      'blocked': blocked})
     return rows
 
@@ -64,6 +64,8 @@ def objective_rows(chapter=None):
 def plan_targets(chapter, strategy, count, notes_source=None):
     if not Source.objects.for_study().filter(pk=chapter.source_id,kind='guideline').exists():
         raise ValidationError('Choose an active main guideline copy.')
+    if LearningObjective.objects.filter(active=True,evidence__chapter__source__active=True).exclude(reconciliation_status='complete').exists():
+        raise ValidationError('Match the newly inventoried learning objectives before generating questions.')
     if strategy not in ('coverage', 'variants') or not 1 <= count <= 50:
         raise ValidationError('Choose a valid generation plan and a limit of 1–50 questions.')
     segments = chapter_segments(chapter)
@@ -84,7 +86,8 @@ def plan_targets(chapter, strategy, count, notes_source=None):
         if not note_segments or any((s['page'].pk,s['start'],s['digest']) not in note_states or
                 note_states[(s['page'].pk,s['start'],s['digest'])].status!='mapped' for s in note_segments):
             raise ValidationError('Map and verify the selected notes before generating their teaching points.')
-        note_ids={oid for s in note_states.values() if s.status=='mapped' for oid in s.audit.get('objective_ids',[])}
+        from .reconciliation import resolved_ids
+        note_ids=resolved_ids({oid for s in note_states.values() if s.status=='mapped' for oid in s.audit.get('objective_ids',[])})
     all_rows = objective_rows()
     if strategy == 'variants' and any(r['count'] == 0 and not r['blocked'] for r in all_rows):
         raise ValidationError('Cover the remaining mapped learning objectives before adding variants.')
@@ -128,13 +131,20 @@ def cost_forecast(rows, mapping_complete, generator=None, reviewer=None):
     planning_unit=repriced/published if repriced is not None else unit
     basic = sum(r['missing'] for r in rows)
     extended = sum(r['remaining'] for r in rows)
-    map_calls = ApiCall.objects.filter(job__kind='map', state='settled')
+    map_calls = ApiCall.objects.filter(job__kind='map', state='settled',job__audit__pipeline='inventory-2')
     map_spend = map_calls.aggregate(n=Sum('actual_nok'))['n'] or Decimal('0')
     map_attempts = map_calls.filter(purpose='map-objectives').count()
+    matching_spend=ApiCall.objects.filter(job__kind__in=['reconcile','link_questions'],state='settled').aggregate(n=Sum('actual_nok'))['n'] or Decimal('0')
+    inventory_calls=ApiCall.objects.filter(job__audit__pipeline='inventory-2',state='settled')
+    inventory_usage=inventory_calls.aggregate(cost=Sum('actual_nok'),inputs=Sum('input_tokens'),cached=Sum('cached_tokens'),reasoning=Sum('reasoning_tokens'))
+    inventory_cost=inventory_usage['cost'] or Decimal('0')
     return {'sample': published, 'measured': measured, 'unit': unit, 'uncertain': uncertain,
             'planning_unit':planning_unit,'repriced':repriced,'generator':generator,
             'reviewer':reviewer,'mapper':settings.AI_MAPPING_MODEL,
             'map_spend': map_spend, 'map_unit': map_spend / map_attempts if map_attempts else None,
+            'matching_spend':matching_spend,
+            'inventory_cost':inventory_cost,'inventory_usage':inventory_usage,
+            'cost_per_matched_objective':inventory_cost/len(rows) if rows and map_attempts else None,
             'basic_missing': basic, 'extended_missing': extended,
             'basic': planning_unit * basic if planning_unit is not None else None,
             'extended': planning_unit * extended if planning_unit is not None else None,
@@ -166,12 +176,14 @@ def coverage_report(generator=None,reviewer=None):
                           'batches_remaining':len(list(pack_segments(outstanding)))})
     rows = objective_rows()
     unclassified = Question.objects.filter(status='published', chapter__source__active=True, objective__isnull=True).count()
-    all_complete = all_complete and not unclassified and any(not d.get('notes') for d in documents)
-    forecast = cost_forecast(rows, all_complete,generator,reviewer)
+    unmatched=sum(r['objective'].reconciliation_status!='complete' for r in rows)
+    confirmed=[r for r in rows if r['objective'].reconciliation_status=='complete']
+    all_complete = all_complete and not unclassified and not unmatched and any(not d.get('notes') for d in documents)
+    forecast = cost_forecast(confirmed, all_complete,generator,reviewer)
     forecast['segments_remaining'] = sum(d['total'] - d['mapped'] for d in documents)
     forecast['batches_remaining'] = sum(d['batches_remaining'] for d in documents)
     forecast['mapping_remaining'] = forecast['map_unit'] * forecast['batches_remaining'] if forecast['map_unit'] is not None else None
-    return {'documents': documents, 'objectives': rows, 'total': len(rows),
+    return {'documents': documents, 'objectives': rows, 'total': len(confirmed),'unmatched':unmatched,
             'covered': sum(r['count'] > 0 for r in rows), 'unclassified': unclassified,
             'blocked': sum(r['blocked'] for r in rows), 'mapping_complete': all_complete,
             'forecast': forecast,

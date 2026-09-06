@@ -302,9 +302,11 @@ def coverage_view(request):
         elif GenerationJob.objects.filter(status__in=['queued','running']).count()>=5:
             form.add_error(None,'Let the existing jobs finish before adding another.')
         else:
-            GenerationJob.objects.create(requested_by=request.user,kind='map',generator_model=settings.AI_MAPPING_MODEL,
-                reviewer_model=settings.AI_REVIEWER_MODEL,**form.cleaned_data)
-            messages.success(request,'Mapping queued within the existing allowance. No questions will be generated automatically.')
+            data=dict(form.cleaned_data)
+            reason=data.pop('retry_reason','')
+            GenerationJob.objects.create(requested_by=request.user,reviewer_model=settings.AI_REVIEWER_MODEL,
+                audit={'pipeline':'inventory-2','retry_reason':reason},**data)
+            messages.success(request,'Inventory work queued within this job limit and the existing allowance. No questions will be generated automatically.')
             return redirect('coverage')
     return render(request,'study/coverage.html',{'report':coverage_report(**comparison),'form':form,'model_form':models,
         'budget':budget,'enabled':enabled,'nav':'studio'})

@@ -80,11 +80,17 @@ class BudgetError(Exception):
     pass
 
 
-def cost_nok(model,tier,input_tokens,output_tokens,budget):
+def cost_nok(model,tier,input_tokens,output_tokens,budget,cached_tokens=None,cache_write_tokens=None):
     inp,out=PRICES[model][tier]
     # Bill all input at cache-write rate: a conservative cost estimate even when
     # automatic prompt caching writes a prefix. No cache discount is assumed.
-    usd=(Decimal(input_tokens)*Decimal(inp)*Decimal('1.25')+Decimal(output_tokens)*Decimal(out))/MILLION
+    if cached_tokens is not None and cache_write_tokens is not None:
+        if min(cached_tokens,cache_write_tokens)<0 or cached_tokens+cache_write_tokens>input_tokens:
+            raise BudgetError('Invalid cache usage. Keep the reservation pending for review.')
+        weighted=Decimal(input_tokens-cached_tokens-cache_write_tokens)+Decimal(cached_tokens)*Decimal('.1')+Decimal(cache_write_tokens)*Decimal('1.25')
+    else:
+        weighted=Decimal(input_tokens)*Decimal('1.25')
+    usd=(weighted*Decimal(inp)+Decimal(output_tokens)*Decimal(out))/MILLION
     return (usd*budget.nok_per_usd*budget.tax_reserve).quantize(Decimal('.0001'),rounding=ROUND_CEILING)
 
 
@@ -101,6 +107,10 @@ def reserve_call(job,model,purpose,input_bound,output_bound):
         raise BudgetError('Source context exceeds the bounded short-context request limit.')
     # Reserve at standard rates, so an unexpected service-tier change still fits.
     amount=cost_nok(model,'default',input_bound,output_bound,budget)
+    if job.spend_limit_nok is not None:
+        spent=sum((c.actual_nok if c.state=='settled' else c.reserved_nok) for c in job.calls.all())
+        if spent+amount>job.spend_limit_nok:
+            raise BudgetError('The next request would exceed this job\'s spending limit. Saved work is retained; no automatic continuation.')
     if amount>budget.remaining:
         raise BudgetError(f'The next request needs a maximum reservation of {amount:.2f} NOK; only {budget.remaining:.2f} NOK remains.')
     budget.accounted_nok+=amount
@@ -124,27 +134,47 @@ def settle_call(call, response):
         call.state='uncertain'
         call.save(update_fields=['state'])
         raise BudgetError('Unexpected billed service tier; its cost remains reserved for review.')
-    amount=cost_nok(call.model,tier,usage.input_tokens,usage.output_tokens,budget)
+    details=getattr(usage,'input_tokens_details',None)
+    cached=getattr(details,'cached_tokens',None)
+    writes=getattr(details,'cache_write_tokens',None)
+    try:
+        amount=cost_nok(call.model,tier,usage.input_tokens,usage.output_tokens,budget,cached,writes)
+    except BudgetError:
+        call.state='uncertain';call.save(update_fields=['state'])
+        raise
     budget.accounted_nok+=amount-call.reserved_nok
     budget.save(update_fields=['accounted_nok'])
     call.actual_nok=amount
     call.input_tokens=usage.input_tokens
     call.output_tokens=usage.output_tokens
+    call.cached_tokens=cached
+    call.cache_write_tokens=writes
+    call.reasoning_tokens=getattr(getattr(usage,'output_tokens_details',None),'reasoning_tokens',None)
+    call.service_tier=tier
     call.provider_response_id=response.id
     call.state='settled'
     call.save()
 
 
-def ask_model(job,model,purpose,instructions,prompt,schema,output_limit):
+def ask_model(job,model,purpose,instructions,prompt,schema,output_limit,*,cache_context=''):
     from openai import OpenAI
     # UTF-8 bytes bound token count conservatively; include schema and overhead.
-    input_bound=len((instructions+prompt+json.dumps(schema.model_json_schema())).encode())+2000
+    input_bound=len((instructions+cache_context+prompt+json.dumps(schema.model_json_schema())).encode())+2000
     call=reserve_call(job,model,purpose,input_bound,output_limit)
     client=OpenAI(api_key=settings.OPENAI_API_KEY,max_retries=0,timeout=60)
+    prefix={'type':'input_text','text':instructions}
+    inputs=[{'role':'developer','content':[prefix]}]
+    if cache_context:
+        inputs.append({'role':'user','content':[{'type':'input_text','text':cache_context,'prompt_cache_breakpoint':{'mode':'explicit'}}]})
+    else:
+        prefix['prompt_cache_breakpoint']={'mode':'explicit'}
+    inputs.append({'role':'user','content':[{'type':'input_text','text':prompt}]})
     try:
         response=client.responses.create(model=model,reasoning={'effort':'high'},background=True,
             service_tier=settings.AI_SERVICE_TIER,store=False,max_output_tokens=output_limit,
-            instructions=instructions,input=prompt,
+            prompt_cache_options={'mode':'explicit','ttl':'30m'},
+            prompt_cache_key=f'hjerte:{purpose}:inventory-2',
+            input=inputs,
             text={'format':{'type':'json_schema','name':schema.__name__,'schema':schema.model_json_schema(),'strict':True}})
         ApiCall.objects.filter(pk=call.pk).update(provider_response_id=response.id)
         started=time.monotonic()
@@ -202,6 +232,12 @@ def source_context(chapter):
 
 
 def run_job(job):
+    if job.kind in ('map','reconcile','link_questions'):
+        job.audit={**job.audit,'pipeline':'inventory-2'}
+        job.save(update_fields=['audit'])
+    if job.kind in ('reconcile','link_questions'):
+        from .reconciliation import run_reconciliation_job
+        return run_reconciliation_job(job)
     if job.kind == 'map':
         from .mapping import run_mapping_job
         return run_mapping_job(job)

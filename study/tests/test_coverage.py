@@ -11,7 +11,7 @@ from study.coverage import (chapter_segments, plan_targets, objective_rows, cove
                             cost_forecast, record_failed_objective)
 from study.generation import (run_job, DraftQuestion, DraftBatch, ReviewBatch, Verdict,
                               NoveltyVerdict, NoveltyReviewBatch)
-from study.mapping import (save_map, MappedObjective, ObjectiveMap, ObjectiveCheck, MapReview)
+from study.mapping import (save_map, MappedObjective, ObjectiveMap, ObjectiveCheck, MapReview, PartInventory, PartCheck, mapping_context)
 from study.engine import start_session, save_answer, public_item
 
 
@@ -128,22 +128,37 @@ class CoverageTests(TestCase):
     def map_fixture(self):
         spec=chapter_segments(self.chapter)[0]
         segment=CoverageSegment.objects.create(**{k:spec[k] for k in ('page','start','end','digest')})
-        objective=MappedObjective(existing_objective_id=None,title='Identify the recommended systolic target',
-            testing_angles=['Recall the target'],references=self.question.references,existing_question_ids=[str(self.question.pk)])
-        draft=ObjectiveMap(objectives=[objective],excluded_content='',unresolved_content='')
-        check=ObjectiveCheck(index=0,canonical_objective_id=None,supported=True,distinct_objective=True,
-            useful_angles=True,existing_questions_match=True)
-        review=MapReview(complete_inventory=True,exclusions_justified=True,checks=[check],notes='Complete for this segment')
+        objective=MappedObjective(title='Identify the recommended systolic target',
+            testing_angles=['Recall the target'],references=self.question.references,part_ids=[0])
+        draft=ObjectiveMap(objectives=[objective],parts=[PartInventory(part_id=0,disposition='learning',reason='Teaching point')],unresolved_content='')
+        check=ObjectiveCheck(index=0,supported=True,useful_angles=True,correct_source_parts=True)
+        review=MapReview(complete_inventory=True,missing_points=[],checks=[check],parts=[PartCheck(part_id=0,all_teaching_points_covered=True,exclusion_justified=True)],notes='Complete for this segment')
         return segment,draft,review
+
+    def save_fixture(self,segment,draft,review):
+        group=[{'page':segment.page,'start':segment.start,'end':segment.end,'digest':segment.digest,'text':segment.page.text[segment.start:segment.end]}]
+        return save_map(self.job,[segment],draft,review,mapping_context(self.job,group))
 
     def test_verified_mapping_classifies_without_rewriting_answers_or_attempts(self):
         session=start_session(self.user,count=1)
         snapshot=session.items.get().snapshot
         segment,draft,review=self.map_fixture()
-        save_map(self.job,segment,draft,review,{self.page.pk})
+        self.save_fixture(segment,draft,review)
         self.question.refresh_from_db();segment.refresh_from_db()
         self.assertEqual(segment.status,'mapped')
-        self.assertIsNotNone(self.question.objective_id)
+        self.assertIsNone(self.question.objective_id)
+        obj=LearningObjective.objects.get()
+        self.assertEqual(obj.reconciliation_status,'pending')
+        self.assertFalse(coverage_report()['mapping_complete'])
+        from study.reconciliation import MatchItem,MatchProposal,MatchCheck,MatchReview,apply_objective_matches,apply_question_links,catalogue
+        draft_match=MatchProposal(items=[MatchItem(id=str(obj.pk),target_id=None,uncertain=False,reason='Distinct concept')])
+        check_match=MatchReview(checks=[MatchCheck(id=str(obj.pk),target_id=None,supported=True,reason='Checked all concepts')])
+        apply_objective_matches([obj],draft_match,check_match,catalogue())
+        link=MatchProposal(items=[MatchItem(id=str(self.question.pk),target_id=obj.pk,uncertain=False,reason='Tests this objective')])
+        checked=MatchReview(checks=[MatchCheck(id=str(self.question.pk),target_id=obj.pk,supported=True,reason='Matches the source')])
+        apply_question_links([self.question],link,checked,catalogue())
+        self.question.refresh_from_db()
+        self.assertEqual(self.question.objective_id,obj.pk)
         self.assertEqual(self.question.answer,2)
         self.assertEqual(session.items.get().snapshot,snapshot)
         self.assertTrue(coverage_report()['mapping_complete'])
@@ -151,7 +166,7 @@ class CoverageTests(TestCase):
     def test_rejected_inventory_cannot_claim_coverage(self):
         segment,draft,review=self.map_fixture()
         review.complete_inventory=False
-        save_map(self.job,segment,draft,review,{self.page.pk})
+        self.save_fixture(segment,draft,review)
         self.assertFalse(LearningObjective.objects.exists())
         segment.refresh_from_db();self.assertEqual(segment.status,'blocked')
         self.assertFalse(coverage_report()['mapping_complete'])
@@ -160,9 +175,11 @@ class CoverageTests(TestCase):
         segment,draft,review=self.map_fixture()
         notes=Source.objects.create(title='AI notes',kind='notes',sha256='c'*64,page_count=1)
         note_page=SourcePage.objects.create(source=notes,number=1,text='An unsupported teaching claim.')
-        segment.page=note_page;segment.save()
+        import hashlib
+        segment.page=note_page;segment.end=len(note_page.text);segment.digest=hashlib.sha256(note_page.text.encode()).hexdigest();segment.save()
+        self.job.notes_source=notes
         draft.unresolved_content='The claim has no primary guideline evidence.'
-        save_map(self.job,segment,draft,review,{self.page.pk})
+        self.save_fixture(segment,draft,review)
         self.assertFalse(LearningObjective.objects.exists())
         self.assertEqual(segment.status,'blocked')
         self.assertFalse(coverage_report()['mapping_complete'])
@@ -170,12 +187,16 @@ class CoverageTests(TestCase):
     def test_canonical_objective_reused_without_raising_ceiling(self):
         obj=LearningObjective.objects.create(title='Canonical treatment objective',topic=self.topic,variant_limit=1)
         segment,draft,review=self.map_fixture()
-        draft.objectives[0].existing_objective_id=obj.pk
+        ObjectiveEvidence.objects.create(objective=obj,chapter=self.chapter,references=self.question.references)
         draft.objectives[0].testing_angles=['Recall','Apply','Interpret']
-        review.checks[0].canonical_objective_id=obj.pk
-        save_map(self.job,segment,draft,review,{self.page.pk})
+        self.save_fixture(segment,draft,review)
         obj.refresh_from_db()
-        self.assertEqual(LearningObjective.objects.count(),1)
+        from study.reconciliation import MatchItem,MatchProposal,MatchCheck,MatchReview,apply_objective_matches,catalogue
+        pending=LearningObjective.objects.get(reconciliation_status='pending')
+        proposal=MatchProposal(items=[MatchItem(id=str(pending.pk),target_id=obj.pk,uncertain=False,reason='Same concept')])
+        checked=MatchReview(checks=[MatchCheck(id=str(pending.pk),target_id=obj.pk,supported=True,reason='Same scope')])
+        apply_objective_matches([pending],proposal,checked,catalogue())
+        self.assertEqual(LearningObjective.objects.filter(active=True).count(),1)
         self.assertEqual(obj.variant_limit,1)
 
     def test_changed_text_and_unmapped_notes_invalidate_complete_inventory(self):
@@ -199,13 +220,16 @@ class CoverageTests(TestCase):
         self.chapter.last_page=2;self.chapter.save()
         segment,draft,review=self.map_fixture()
         self.job.kind='map'
+        draft.objectives[0].part_ids=[0,1]
+        draft.parts.append(PartInventory(part_id=1,disposition='learning',reason='Repeated teaching point'))
+        review.parts.append(PartCheck(part_id=1,all_teaching_points_covered=True,exclusion_justified=True))
         with patch('study.mapping.ask_model',side_effect=[draft,review]) as ai:
             run_job(self.job)
         self.assertEqual(ai.call_count,2)
         self.assertEqual(CoverageSegment.objects.filter(status='mapped').count(),2)
         self.assertEqual(LearningObjective.objects.count(),1)
         prompt=json.loads(ai.call_args_list[0].args[4])
-        self.assertEqual({p['page_id'] for p in prompt['segment']['parts']},{self.page.pk,page2.pk})
+        self.assertEqual({p['page_id'] for p in prompt['parts']},{self.page.pk,page2.pk})
 
     def test_empty_page_is_blocked_without_api(self):
         self.page.text='';self.page.save()

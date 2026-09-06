@@ -75,16 +75,39 @@ class GenerateForm(ModelPairForm):
 
 
 class MappingForm(forms.Form):
+    kind = forms.ChoiceField(choices=[('map','1. Map & verify source content'),('reconcile','2. Match shared learning objectives'),('link_questions','3. Link existing questions')],required=False,label='Next step')
     chapter = forms.ModelChoiceField(queryset=Chapter.objects.filter(source__kind='guideline', source__active=True,source__duplicate_of__isnull=True).select_related('source'))
     notes_source = forms.ModelChoiceField(queryset=Source.objects.for_study().filter(kind='notes'), required=False,
         label='Map study notes instead', empty_label='Map the guideline chapter',
         help_text='Notes are inventoried only when their teaching points can be verified against this guideline chapter.')
-    count = forms.TypedChoiceField(choices=[(n, f'Up to {n} mapping batch'+('es' if n>1 else '')) for n in (1, 3, 5)], coerce=int, initial=1,
-        help_text='Short consecutive text segments are packed together to reduce API overhead.')
+    notes_first_location = forms.IntegerField(min_value=1,required=False,label='Notes: first location (optional)')
+    notes_last_location = forms.IntegerField(min_value=1,required=False,label='Notes: last location (optional)',help_text='Limit notes to the section supported by this chapter. PDF: page; slides: slide; Word: extracted section. Leave both empty to use the whole file.')
+    count = forms.TypedChoiceField(choices=[(n, f'Up to {n} work batch'+('es' if n>1 else '')) for n in (1, 3, 5)], coerce=int, initial=1,
+        help_text='A batch covers a source section or up to ten objectives/questions. The job stops at this limit.')
+    generator_model = forms.ChoiceField(choices=[('gpt-5.6-terra','Terra · normal inventory'),('gpt-5.6-sol','Sol'),('gpt-6-astra','Astra · difficult material')],required=False,label='Inventory model')
+    spend_limit_nok = forms.DecimalField(min_value=1,max_value=200,decimal_places=2,required=False,initial=25,label='Maximum job spend (NOK)',help_text='Also limited by the remaining approved allowance. Reservations must fit before a request starts.')
+    retry_blocked = forms.BooleanField(required=False,label='Retry unresolved items after review')
+    retry_reason = forms.CharField(required=False,label='Reason for retry',help_text='Explain what you checked or changed. No automatic paid retry occurs.')
+
+    def __init__(self,*args,**kwargs):
+        super().__init__(*args,**kwargs)
+        self.fields['generator_model'].initial=settings.AI_MAPPING_MODEL
 
     def clean(self):
         data=super().clean()
+        from decimal import Decimal
+        data['kind']=data.get('kind') or 'map'
+        data['generator_model']=data.get('generator_model') or settings.AI_MAPPING_MODEL
+        data['spend_limit_nok']=data.get('spend_limit_nok') or Decimal('25')
         chapter,notes=data.get('chapter'),data.get('notes_source')
         if chapter and notes and not notes.supporting_guidelines.filter(pk=chapter.source_id).exists():
             self.add_error('notes_source','Link these notes to the selected guideline first.')
+        if data['kind']!='map' and notes:
+            self.add_error('notes_source','Leave notes unselected for objective matching or question linking; the chapter selects the scope.')
+        first,last=data.get('notes_first_location'),data.get('notes_last_location')
+        if first is not None or last is not None:
+            if data['kind']!='map' or not notes or first is None or last is None or last<first or last>notes.page_count:
+                self.add_error('notes_last_location','Choose a valid inclusive range within the selected notes file, for source mapping only.')
+        if data.get('retry_blocked') and len(data.get('retry_reason','').strip())<15:
+            self.add_error('retry_reason','Describe the review or changed evidence in at least 15 characters.')
         return data

@@ -8,7 +8,7 @@ class QuestionAdmin(admin.ModelAdmin):
     list_display=['short_stem','topic','question_type','difficulty','status','version']
     list_filter=['status','topic','question_type','difficulty',('objective',admin.EmptyFieldListFilter)]
     search_fields=['stem','learning_point']
-    readonly_fields=['fingerprint','verification','generated_by','created_at','updated_at','version']
+    readonly_fields=['fingerprint','verification','generated_by','created_at','updated_at','version','objective_link_audit']
     def short_stem(self,obj):
         return obj.stem[:110]
     def save_model(self,request,obj,form,change):
@@ -47,8 +47,9 @@ admin.site.register([Domain,Topic])
 
 @admin.register(LearningObjective)
 class ObjectiveAdmin(admin.ModelAdmin):
-    list_display=['title','topic','variant_limit','failed_attempts','active']
-    list_filter=['topic','active']
+    list_display=['title','topic','variant_limit','failed_attempts','reconciliation_status','active']
+    list_filter=['topic','active','reconciliation_status']
+    readonly_fields=['reconciliation_status','reconciliation_audit','merged_into']
     search_fields=['title','depth_reason']
 
 
