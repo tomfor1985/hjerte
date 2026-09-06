@@ -265,8 +265,9 @@ def process_group(job, records, context, ask):
                 image_error = 'Original page images unavailable; visual claims must stay unresolved.'
             body = {**prompt_context(context), 'proposed_inventory': proposal.model_dump(),
                     'supplied_images': metadata(images), 'image_issue': image_error}
+            review_limit = 24000 if len(proposal.objectives) > 16 else 16000
             review = ask(job, reviewer, 'map-review', MAP_REVIEW + AUTO_REVIEW,
-                         json.dumps(body, ensure_ascii=False), AutomaticReview, 16000, **({'images': images} if images else {}))
+                         json.dumps(body, ensure_ascii=False), AutomaticReview, review_limit, **({'images': images} if images else {}))
             if not isinstance(review, AutomaticReview):
                 raise ValidationError('Automatic inventory requires an item-level source review.')
             done, accepted, held = save_checked_inventory(job, records, proposal, review, context, images)
