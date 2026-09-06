@@ -71,7 +71,14 @@ class AutomaticInventoryTests(TestCase):
         complete,accepted,held=save_checked_inventory(self.job,records,proposal,review,context,[])
         self.assertFalse(complete);self.assertEqual(accepted,[]);self.assertEqual(len(held),1)
         obj.refresh_from_db();self.assertEqual(obj.title,'Changed clinical scope')
-        self.assertTrue(obj.blocked_reason)
+        self.assertTrue(obj.blocked_reason);self.assertFalse(obj.active)
+        from study.reconciliation import catalogue, validate_objectives
+        self.assertEqual(catalogue(),[])
+        with self.assertRaises(ValidationError):validate_objectives([obj.pk])
+        obj.title=proposal.objectives[0].title;obj.save()
+        save_checked_inventory(self.job,records,proposal,review,context,[])
+        obj.refresh_from_db();self.assertTrue(obj.active);self.assertFalse(obj.blocked_reason)
+        self.assertEqual(obj.reconciliation_status,'pending')
 
     def test_unknown_passage_is_held_without_losing_supported_objective(self):
         records,proposal,review,context=self.fixture(complete=True)

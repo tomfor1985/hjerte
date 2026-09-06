@@ -120,7 +120,9 @@ def save_checked_inventory(job, records, proposal, review, context, images):
             continue
         if not created and objective.blocked_reason.startswith('A subsequent inventory check'):
             objective.blocked_reason = ''
-            objective.save(update_fields=['blocked_reason'])
+            objective.active = objective.merged_into_id is None
+            objective.reconciliation_status = 'pending'
+            objective.save(update_fields=['blocked_reason', 'active', 'reconciliation_status'])
         if created:
             ObjectiveEvidence.objects.create(objective=objective, chapter=job.chapter, references=refs)
         accepted.append(index)
@@ -149,7 +151,7 @@ def save_checked_inventory(job, records, proposal, review, context, images):
     for index, old_id in previous.items():
         if old_id not in current:
             LearningObjective.objects.filter(pk=old_id, merged_into__isnull=True).update(
-                blocked_reason='A subsequent inventory check did not retain this candidate.')
+                active=False, blocked_reason='A subsequent inventory check did not retain this candidate.')
     audit = {'job_id': str(job.pk), 'prompt_version': PROMPT_VERSION,
              'source_sha256': records[0].page.source.sha256, 'evidence_source_id': job.chapter.source_id,
              'evidence_sha256': job.chapter.source.sha256, 'context_key': signature(context),
