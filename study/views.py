@@ -287,7 +287,7 @@ def source_setup(request,source_id):
         form.save()
         messages.success(request,'Source setup saved.')
         return redirect('source_setup',source_id=source.pk)
-    generate=GenerateForm()
+    generate=GenerateForm(initial={'notes_source':source.pk} if source.kind=='notes' else None)
     eligible=source.chapters.all() if source.kind=='guideline' else Chapter.objects.filter(source__in=source.supporting_guidelines.filter(active=True))
     generate.fields['chapter'].queryset=eligible.filter(source__active=True).select_related('source')
     return render(request,'study/source_setup.html',{'source':source,'chapters':chapters,'notes':notes,

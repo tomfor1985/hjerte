@@ -273,6 +273,14 @@ class StudyTests(TestCase):
         self.assertEqual(self.client.post(path,{'action':'retire'}).status_code,302)
         self.source.refresh_from_db();self.assertTrue(self.source.active)
 
+    def test_specific_notes_require_a_linked_authoritative_guideline(self):
+        from study.forms import GenerateForm
+        notes=Source.objects.create(title='My notes',kind='notes',sha256='c'*64,page_count=1)
+        data={'chapter':self.chapter.pk,'notes_source':notes.pk,'count':5}
+        self.assertFalse(GenerateForm(data).is_valid())
+        notes.supporting_guidelines.add(self.source)
+        self.assertTrue(GenerateForm(data).is_valid())
+
     def test_flagged_filter(self):
         QuestionProgress.objects.create(user=self.user,question=self.question,flagged=True)
         self.make_question(1)

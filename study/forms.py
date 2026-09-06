@@ -41,4 +41,14 @@ ChapterFormSet = forms.inlineformset_factory(Source,Chapter,
 
 class GenerateForm(forms.Form):
     chapter = forms.ModelChoiceField(queryset=Chapter.objects.filter(source__kind='guideline',source__active=True).select_related('source'))
+    notes_source = forms.ModelChoiceField(queryset=Source.objects.filter(kind='notes',active=True),required=False,
+        label='Focus on specific notes',empty_label='Use relevant linked notes',
+        help_text='Optional. Questions use this file for teaching ideas and the selected guideline for evidence.')
     count = forms.TypedChoiceField(choices=[(n,str(n)) for n in (5,10,20,50)],coerce=int,initial=5)
+
+    def clean(self):
+        data=super().clean()
+        chapter,notes=data.get('chapter'),data.get('notes_source')
+        if chapter and notes and not notes.supporting_guidelines.filter(pk=chapter.source_id).exists():
+            self.add_error('notes_source','Link these notes to the selected guideline in source setup first.')
+        return data

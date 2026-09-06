@@ -188,6 +188,7 @@ class GenerationJob(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     requested_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
     chapter = models.ForeignKey(Chapter, on_delete=models.PROTECT)
+    notes_source = models.ForeignKey(Source,on_delete=models.PROTECT,null=True,blank=True,related_name='note_generation_jobs')
     count = models.PositiveIntegerField(default=5)
     status = models.CharField(max_length=20, default='queued', choices=[('queued', 'Queued'), ('running', 'Running'), ('complete', 'Complete'), ('failed', 'Failed')])
     published = models.PositiveIntegerField(default=0)

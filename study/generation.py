@@ -193,6 +193,11 @@ def run_job(job):
     chapter=job.chapter
     if chapter.source.kind!='guideline' or not chapter.source.active:
         raise ValidationError('Generate from an active authoritative guideline, not study notes.')
+    linked_notes=chapter.source.study_notes.filter(kind='notes',active=True)
+    if job.notes_source_id:
+        linked_notes=linked_notes.filter(pk=job.notes_source_id)
+        if not linked_notes.exists():
+            raise ValidationError('Selected notes must be active and linked to this guideline.')
     remaining=job.count
     while remaining>0:
         count=min(5,remaining)
@@ -204,7 +209,7 @@ def run_job(job):
         note_size=0
         words=set(chapter.title.casefold().split())-{'and','the','of','in','with'}
         note_pages=[]
-        for note in chapter.source.study_notes.filter(kind='notes',active=True):
+        for note in linked_notes:
             for page in note.pages.all():
                 score=sum(page.text.casefold().count(word) for word in words)
                 note_pages.append((score,note.title,page.text,note.id,note.sha256,page.id))
