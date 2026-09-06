@@ -80,6 +80,14 @@ class BudgetError(Exception):
     pass
 
 
+class IncompleteModelResponse(ValidationError):
+    def __init__(self, response, call):
+        super().__init__('The model reached its output limit. Only complete inventory candidates may be recovered for independent checking.')
+        self.output_text = response.output_text
+        self.response_id = response.id
+        self.call_id = call.pk
+
+
 def cost_nok(model,tier,input_tokens,output_tokens,budget,cached_tokens=None,cache_write_tokens=None):
     inp,out=PRICES[model][tier]
     # Bill all input at cache-write rate: a conservative cost estimate even when
@@ -212,6 +220,8 @@ def ask_model(job,model,purpose,instructions,prompt,schema,output_limit,*,cache_
         # or automatically retry an uncertain paid call.
         ApiCall.objects.filter(pk=call.pk,state='reserved').update(state='uncertain')
         raise
+    if response.status=='incomplete' and getattr(getattr(response,'incomplete_details',None),'reason',None)=='max_output_tokens' and response.output_text:
+        raise IncompleteModelResponse(response,call)
     if response.status!='completed' or not response.output_text:
         raise ValidationError('The model did not return a complete structured response. No questions were published.')
     return schema.model_validate_json(response.output_text)

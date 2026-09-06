@@ -1,10 +1,13 @@
 import copy
+import hashlib
+import io
 import json
 import tempfile
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import patch
 from django.core.exceptions import ValidationError
+from django.core.management import call_command, CommandError
 from django.test import TestCase, override_settings
 from study.tests import test_study as base_fixtures
 from study.tests import test_coverage as coverage_fixtures
@@ -14,7 +17,8 @@ from study.mapping import mapping_context
 from study.automatic_mapping import (AutomaticObjective, AutomaticMap, AutomaticCheck, AutomaticReview,
                                      save_checked_inventory, reuse_passage_draft)
 from study.coverage import chapter_segments, coverage_report, plan_targets
-from study.generation import run_job, ask_model, BudgetError, DraftBatch
+from study.generation import run_job, ask_model, BudgetError, DraftBatch, IncompleteModelResponse
+from study.inventory_recovery import recover_inventory, resume_paid_inventory_review, OUTPUT_GAP
 from study.pdf_images import page_image, metadata, validate_images, reference_images
 from study.sources import import_source
 
@@ -75,6 +79,75 @@ class AutomaticInventoryTests(TestCase):
         complete,accepted,held=save_checked_inventory(self.job,records,proposal,review,context,[])
         self.assertFalse(complete);self.assertEqual(accepted,[0]);self.assertEqual(held[0]['index'],1)
         self.assertEqual(LearningObjective.objects.count(),1)
+
+    def interrupted(self, proposal):
+        prefix=json.dumps({'parts':[p.model_dump() for p in proposal.parts],
+                           'cross_references':[],'unresolved_content':''})[:-1]
+        return prefix+',"objectives":['+json.dumps(proposal.objectives[-1].model_dump())+',{"title":"unfinished'
+
+    def test_interrupted_inventory_recovers_only_whole_candidates_and_preserves_gap(self):
+        records,proposal,review,context=self.fixture()
+        recovered=recover_inventory(self.interrupted(proposal),context)
+        self.assertEqual(recovered.objectives,[proposal.objectives[1]])
+        self.assertEqual(recovered.unresolved_content,OUTPUT_GAP)
+        self.assertFalse(LearningObjective.objects.exists())
+        # Decoder boundaries, not string matching, handle JSON inside strings.
+        proposal.objectives[1].title='A title containing } and "objectives" and [ characters'
+        self.assertEqual(recover_inventory(self.interrupted(proposal),context).objectives,[proposal.objectives[1]])
+        with self.assertRaises(ValidationError):recover_inventory('{"objectives":[{"title":"cut',context)
+        with self.assertRaises(ValidationError):recover_inventory('{"objectives":[{}',context)
+        with self.assertRaises(ValidationError):recover_inventory('{"unexpected":true,',context)
+
+    def test_interrupted_repair_requires_complete_independent_review(self):
+        records,proposal,review,context=self.fixture()
+        response=SimpleNamespace(id='response',output_text=self.interrupted(proposal))
+        interrupted=IncompleteModelResponse(response,SimpleNamespace(pk=1))
+        final=review.model_copy(deep=True);final.complete_inventory=True;final.missing_points=[]
+        final.parts[0].all_teaching_points_covered=True
+        for check in final.checks:check.supported=True;check.qualifications_complete=True
+        with patch('study.automatic_mapping.MAX_REPAIRS',1),patch('study.mapping.ask_model',side_effect=[proposal,review,interrupted,final]) as ai:
+            run_job(self.job)
+        self.assertEqual(ai.call_count,4)
+        self.assertEqual(LearningObjective.objects.count(),2)
+        self.assertEqual(CoverageSegment.objects.get().status,'partial')
+        self.assertEqual(self.job.audit['recovered_outputs'][0]['complete_candidates'],1)
+        self.assertEqual(ai.call_args_list[2].args[5].model_json_schema()['properties']['objectives']['maxItems'],8)
+
+    def test_paid_resume_is_same_job_once_with_original_cap_and_review_only(self):
+        records,proposal,review,context=self.fixture()
+        self.job.status='failed';self.job.spend_limit_nok=Decimal('25');self.job.retry_blocked=True;self.job.save()
+        save_checked_inventory(self.job,records,proposal,review,context,[])
+        call=ApiCall.objects.create(job=self.job,model='gpt-6-astra',purpose='map-repair',state='uncertain',
+            actual_nok=1,reserved_nok=1,provider_response_id='paid')
+        error=IncompleteModelResponse(SimpleNamespace(id='paid',output_text=self.interrupted(proposal)),call)
+        with self.assertRaises(ValidationError):resume_paid_inventory_review(self.job,error)
+        call.state='settled';call.save()
+        self.assertEqual(resume_paid_inventory_review(self.job,error),1)
+        self.assertEqual(self.job.status,'queued');self.assertEqual(self.job.spend_limit_nok,Decimal('25'))
+        with self.assertRaises(ValidationError):resume_paid_inventory_review(self.job,error)
+        final=review.model_copy(deep=True)
+        for check in final.checks:check.supported=True;check.qualifications_complete=True
+        with patch('study.mapping.ask_model',return_value=final) as ai:run_job(self.job)
+        self.assertEqual(ai.call_count,1);self.assertEqual(ai.call_args.args[2],'map-review')
+        self.assertEqual(LearningObjective.objects.count(),2)
+        self.assertEqual(self.job.audit['repair_rounds'],1)
+
+    def test_recovery_command_reuses_verified_saved_response_without_provider_request(self):
+        records,proposal,review,context=self.fixture()
+        self.job.status='failed';self.job.spend_limit_nok=Decimal('25');self.job.save()
+        save_checked_inventory(self.job,records,proposal,review,context,[])
+        call=ApiCall.objects.create(job=self.job,model='gpt-6-astra',purpose='map-repair',state='settled',
+            actual_nok=1,reserved_nok=1,provider_response_id='paid')
+        text=self.interrupted(proposal)
+        cached={'call_id':str(call.pk),'response_id':'paid','status':'incomplete','incomplete_reason':'max_output_tokens',
+                'output_text':text,'output_sha256':'wrong'}
+        self.job.audit={**self.job.audit,'interrupted_repair_response':cached};self.job.save()
+        with patch('openai.OpenAI') as provider:
+            with self.assertRaises(CommandError):call_command('recover_inventory_response',str(self.job.pk),stdout=io.StringIO())
+            cached['output_sha256']=hashlib.sha256(text.encode()).hexdigest();self.job.save()
+            call_command('recover_inventory_response',str(self.job.pk),stdout=io.StringIO())
+            provider.assert_not_called()
+        self.job.refresh_from_db();self.assertEqual(self.job.status,'queued')
 
     def test_unseen_visual_claim_and_omitted_qualification_never_pass(self):
         records,proposal,review,context=self.fixture(complete=True)
@@ -230,4 +303,18 @@ class ImageBudgetTests(TestCase):
             sent=client.return_value.responses.create.call_args.kwargs
             self.assertEqual(counted['input'],sent['input'])
             self.assertEqual(sent['input'][-1]['content'][-1]['detail'],'original')
+        self.assertEqual(ApiCall.objects.get().state,'settled')
+
+    def test_output_limited_response_stays_settled_and_is_not_a_network_retry(self):
+        job=GenerationJob.objects.create(chapter=self.chapter,requested_by=self.user,kind='map',spend_limit_nok=25)
+        ApiBudget.objects.create(pk=1,allowance_nok=200)
+        response=SimpleNamespace(id='r',status='incomplete',output_text='{"objectives":[',
+            incomplete_details=SimpleNamespace(reason='max_output_tokens'),service_tier='flex',
+            usage=SimpleNamespace(input_tokens=300,output_tokens=100))
+        with patch('openai.OpenAI') as client:
+            client.return_value.responses.create.return_value=response
+            with self.assertRaises(IncompleteModelResponse) as error:
+                ask_model(job,'gpt-5.6-sol','map-repair','Instruction','Text',DraftBatch,100)
+            self.assertEqual(error.exception.output_text,response.output_text)
+            self.assertEqual(client.return_value.responses.create.call_count,1)
         self.assertEqual(ApiCall.objects.get().state,'settled')

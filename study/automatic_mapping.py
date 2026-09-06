@@ -3,9 +3,10 @@ import hashlib
 import json
 import subprocess
 from decimal import Decimal
+from pydantic import Field
 from django.core.exceptions import ValidationError
 from django.db import transaction
-from .generation import BudgetError
+from .generation import BudgetError, IncompleteModelResponse
 from .mapping import (CitedMap, CitedObjective, ScopedMapReview, ObjectiveCheck, resolve_citations,
                       prompt_context, visible_references, PROMPT_VERSION)
 from .models import LearningObjective, ObjectiveEvidence, SourcePage
@@ -20,6 +21,10 @@ class AutomaticObjective(CitedObjective):
 
 class AutomaticMap(CitedMap):
     objectives: list[AutomaticObjective]
+
+
+class BoundedRepairMap(AutomaticMap):
+    objectives: list[AutomaticObjective] = Field(max_length=8)
 
 
 class AutomaticCheck(ObjectiveCheck):
@@ -203,6 +208,21 @@ def process_group(job, records, context, ask):
     reviewer = job.reviewer_model or settings.AI_REVIEWER_MODEL
     context_key = signature(context)
     old = records[0].audit
+    resumed = old.get('resume_job_id') == str(job.pk)
+    first_round = old.get('resume_round', 0) if resumed else 0
+    review_only = resumed and old.get('resume_review_only', False)
+    if type(first_round) is not int or not 0 <= first_round <= MAX_REPAIRS:
+        raise ValidationError('Invalid automatic repair checkpoint.')
+
+    def request_inventory(model, purpose, instructions, body, schema, **kwargs):
+        try:
+            return ask(job, model, purpose, instructions, body, schema, 16000, **kwargs)
+        except IncompleteModelResponse as error:
+            from .inventory_recovery import recover_inventory, record_recovery
+            recovered = recover_inventory(error.output_text, context)
+            record_recovery(job, error, recovered, purpose)
+            return recovered
+
     proposal = None
     images = []
     if (old.get('context_key') == context_key and old.get('prompt_version') == PROMPT_VERSION and
@@ -220,8 +240,8 @@ def process_group(job, records, context, ask):
     reviewed = False
     try:
         if proposal is None:
-            proposal = ask(job, writer, 'map-objectives', MAP_INSTRUCTIONS + AUTO_MAP,
-                           json.dumps(prompt_context(context), ensure_ascii=False), AutomaticMap, 16000)
+            proposal = request_inventory(writer, 'map-objectives', MAP_INSTRUCTIONS + AUTO_MAP,
+                           json.dumps(prompt_context(context), ensure_ascii=False), AutomaticMap)
             remember(records, job_id=str(job.pk), prompt_version=PROMPT_VERSION, raw_proposal=proposal.model_dump())
         # Compatibility for previously stored/explicitly supplied old schemas.
         # New API calls are always constrained to AutomaticMap/AutomaticReview.
@@ -233,7 +253,7 @@ def process_group(job, records, context, ask):
                          json.dumps({**prompt_context(context), 'proposed_inventory': draft.model_dump()}, ensure_ascii=False), ScopedMapReview, 12000)
             done = save_map(job, records, draft, review, context)
             return done, len(draft.objectives) if done else 0
-        for round_number in range(MAX_REPAIRS + 1):
+        for round_number in range(first_round, MAX_REPAIRS + 1):
             remember(records, current_proposal=proposal.model_dump(), context_key=context_key,
                      prompt_version=PROMPT_VERSION, job_id=str(job.pk))
             # Writer-requested visuals are included in the first independent check.
@@ -246,7 +266,7 @@ def process_group(job, records, context, ask):
             body = {**prompt_context(context), 'proposed_inventory': proposal.model_dump(),
                     'supplied_images': metadata(images), 'image_issue': image_error}
             review = ask(job, reviewer, 'map-review', MAP_REVIEW + AUTO_REVIEW,
-                         json.dumps(body, ensure_ascii=False), AutomaticReview, 12000, **({'images': images} if images else {}))
+                         json.dumps(body, ensure_ascii=False), AutomaticReview, 16000, **({'images': images} if images else {}))
             if not isinstance(review, AutomaticReview):
                 raise ValidationError('Automatic inventory requires an item-level source review.')
             done, accepted, held = save_checked_inventory(job, records, proposal, review, context, images)
@@ -254,7 +274,7 @@ def process_group(job, records, context, ask):
             job.audit = {**job.audit, 'repair_rounds': round_number,
                          'accepted_objectives': len(accepted), 'held_objectives': len(held)}
             job.save(update_fields=['audit'])
-            if done or round_number == MAX_REPAIRS:
+            if done or round_number == MAX_REPAIRS or review_only:
                 return done, len(accepted)
             # Retain approved candidates, ask only for additions and replacements.
             retained = [proposal.objectives[i] for i in accepted]
@@ -269,8 +289,8 @@ def process_group(job, records, context, ask):
                            'source_review': review.model_dump(), 'mechanical_issues': held,
                            'unresolved_content': proposal.unresolved_content, 'supplied_images': metadata(images),
                            'image_issue': image_error}
-            replacement = ask(job, repair_model, 'map-repair', MAP_INSTRUCTIONS + AUTO_MAP + AUTO_REPAIR,
-                              json.dumps(repair_body, ensure_ascii=False), AutomaticMap, 16000,
+            replacement = request_inventory(repair_model, 'map-repair', MAP_INSTRUCTIONS + AUTO_MAP + AUTO_REPAIR,
+                              json.dumps(repair_body, ensure_ascii=False), BoundedRepairMap,
                               **({'images': images} if images else {}))
             remember(records, raw_repair=replacement.model_dump(), repair_model=repair_model)
             retained_keys = {signature(o.model_dump()) for o in retained}
