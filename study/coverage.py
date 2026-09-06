@@ -12,15 +12,29 @@ FAILURE_LIMIT = 2
 
 
 def segments_for(page):
+    from .pdf_reading import page_text, reading_for
+    content = page_text(page)
+    reading = reading_for(page)
+    if reading and reading.passages:
+        start, end = 0, 0
+        for passage in reading.passages:
+            if passage['end'] - start > SEGMENT_SIZE and end > start:
+                text = content[start:end]
+                yield {'page': page, 'start': start, 'end': end, 'digest': hashlib.sha256(text.encode()).hexdigest(), 'text': text}
+                start = end
+            end = passage['end']
+        text = content[start:]
+        yield {'page': page, 'start': start, 'end': len(content), 'digest': hashlib.sha256(text.encode()).hexdigest(), 'text': text}
+        return
     # Never silently skip long pages or blank/OCR-failed pages.
-    for start in range(0, max(1, len(page.text)), SEGMENT_SIZE):
-        text = page.text[start:start + SEGMENT_SIZE]
+    for start in range(0, max(1, len(content)), SEGMENT_SIZE):
+        text = content[start:start + SEGMENT_SIZE]
         yield {'page': page, 'start': start, 'end': start + len(text),
                'digest': hashlib.sha256(text.encode()).hexdigest(), 'text': text}
 
 
 def chapter_segments(chapter):
-    return [s for p in chapter.source.pages.filter(number__gte=chapter.first_page,
+    return [s for p in chapter.source.pages.select_related('source', 'reading').filter(number__gte=chapter.first_page,
             number__lte=chapter.last_page) for s in segments_for(p)]
 
 
@@ -44,6 +58,12 @@ def pack_segments(segments,limit=48000):
 def mapping_state(segments):
     ids = {s['page'].pk for s in segments}
     return {(s.page_id, s.start, s.digest): s for s in CoverageSegment.objects.filter(page_id__in=ids)}
+
+
+def prior_blocked_parts(segments, states):
+    keys={(s['page'].pk,s['start'],s['digest']) for s in segments}
+    pending_pages={key[0] for key in keys if key not in states or states[key].status!='mapped'}
+    return [r for key,r in states.items() if r.status=='blocked' and key not in keys and r.page_id in pending_pages]
 
 
 def objective_rows(chapter=None):
@@ -131,7 +151,8 @@ def cost_forecast(rows, mapping_complete, generator=None, reviewer=None):
     planning_unit=repriced/published if repriced is not None else unit
     basic = sum(r['missing'] for r in rows)
     extended = sum(r['remaining'] for r in rows)
-    map_calls = ApiCall.objects.filter(job__kind='map', state='settled',job__audit__pipeline='inventory-2')
+    from .mapping import PROMPT_VERSION
+    map_calls = ApiCall.objects.filter(job__kind='map', state='settled',job__audit__inventory_prompt=PROMPT_VERSION)
     map_spend = map_calls.aggregate(n=Sum('actual_nok'))['n'] or Decimal('0')
     map_attempts = map_calls.filter(purpose='map-objectives').count()
     matching_spend=ApiCall.objects.filter(job__kind__in=['reconcile','link_questions'],state='settled').aggregate(n=Sum('actual_nok'))['n'] or Decimal('0')
@@ -157,9 +178,19 @@ def cost_forecast(rows, mapping_complete, generator=None, reviewer=None):
 def coverage_report(generator=None,reviewer=None):
     documents = []
     all_complete = True
-    for source in Source.objects.for_study().prefetch_related('pages', 'chapters').order_by('kind', 'title'):
+    for source in Source.objects.for_study().prefetch_related('pages__reading', 'chapters').order_by('kind', 'title'):
         segments = [s for p in source.pages.all() for s in segments_for(p)]
         states = mapping_state(segments)
+        from .pdf_reading import reading_for
+        reading_pages=sum(reading_for(p) is not None for p in source.pages.all())
+        unreadable_pages=sum(bool((reading:=reading_for(p)) and '\ufffd' in reading.text) for p in source.pages.all())
+        keys={(s['page'].pk,s['start'],s['digest']) for s in segments}
+        old_blocked=len(prior_blocked_parts(segments,states))
+        cross_references={}
+        for key,record in states.items():
+            if key in keys and record.status=='mapped':
+                for ref in record.audit.get('draft',{}).get('cross_references',[]):
+                    cross_references[(ref['passage_id'],ref['target'])]=ref
         outstanding=[s for s in segments if (s['page'].pk,s['start'],s['digest']) not in states or
                      states[(s['page'].pk,s['start'],s['digest'])].status!='mapped']
         mapped = sum(bool(states.get((s['page'].pk, s['start'], s['digest'])) and
@@ -172,6 +203,7 @@ def coverage_report(generator=None,reviewer=None):
         complete = bool(segments) and mapped == len(segments) and not missing_pages
         all_complete = all_complete and complete
         documents.append({'source': source, 'notes': source.kind == 'notes', 'total': len(segments), 'mapped': mapped,
+                          'reading_pages':reading_pages,'unreadable_pages':unreadable_pages,'old_blocked':old_blocked,'cross_references':list(cross_references.values()),
                           'blocked': blocked, 'gaps': gaps, 'missing_pages': missing_pages, 'complete': complete,
                           'batches_remaining':len(list(pack_segments(outstanding)))})
     rows = objective_rows()

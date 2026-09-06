@@ -264,11 +264,16 @@ def run_job(job):
         count=len(targets)
         target_map={obj.pk:obj for obj in targets}
         required_ids={r['page_id'] for obj in targets for ev in obj.evidence.filter(chapter=chapter) for r in ev.references}
-        pages=[{'page_id':p.pk,'pdf_page':p.number,'text':p.text} for p in chapter.source.pages.filter(pk__in=required_ids,number__gte=chapter.first_page,number__lte=chapter.last_page)]
+        from .pdf_reading import page_text, reading_for, evidence_part, prompt_part
+        source_pages=list(chapter.source.pages.select_related('source','reading').filter(pk__in=required_ids,number__gte=chapter.first_page,number__lte=chapter.last_page))
+        pages=[{'page_id':p.pk,'pdf_page':p.number,'text':page_text(p)} for p in source_pages]
         if not pages or {p['page_id'] for p in pages}!=required_ids or sum(len(p['text']) for p in pages)>70000:
             raise ValidationError('Objective evidence is missing or exceeds the request limit. Narrow the chapter/objective plan.')
+        use_passages=any(reading_for(p) for p in source_pages)
+        evidence=[evidence_part(p,0,len(page_text(p))) for p in source_pages] if use_passages else []
         context={'guideline':chapter.source.title,'year':chapter.source.year,'doi':chapter.source.doi,
                  'chapter':chapter.title,'pages':pages}
+        if use_passages:context['pages']=[prompt_part(p) for p in evidence]
         notes=[]
         note_size=0
         words=set(chapter.title.casefold().split())-{'and','the','of','in','with'}
@@ -285,7 +290,17 @@ def run_job(job):
         catalog=question_catalog()
         prompt=json.dumps({'count':count,'planned_objectives':[{'id':o.pk,'title':o.title,'allowed_angles':o.depth_reason} for o in targets],
                            'existing_questions':catalog,'source':context,'unverified_study_notes':notes})
-        batch=ask_model(job,generator_model,'generate',GENERATOR_INSTRUCTIONS+'\nGenerate at most ONE question per supplied planned objective, using its exact objective_id. Do not invent or substitute objective IDs. Describe its testing_angle. Compare with ALL existing questions across documents; cosmetic changes, another patient age or synonyms do not create a distinct testing angle. Return zero questions for objectives where no useful new angle remains.',prompt,DraftBatch,16000)
+        instructions=GENERATOR_INSTRUCTIONS
+        schema=DraftBatch
+        if use_passages:
+            from .cited_questions import CitedQuestionBatch,question_references
+            schema=CitedQuestionBatch
+            instructions=instructions.replace('and at least one exact supporting quote from a supplied page','and at least one reference selecting a supplied primary passage_id')
+            instructions=instructions.replace('Each quote should be a short sentence or passage of 30-400 characters that appears verbatim in the source. Reference the actual printed guideline section/table and the provided database page_id.', 'For references select exact passage_id values and accurate section labels. The server copies their text verbatim; never write or assemble quotations. Use all passages required to support the claim. PDF block coordinates describe location, not automatic table/diagram relationships; reject unclear evidence.')
+        batch=ask_model(job,generator_model,'generate',instructions+'\nGenerate at most ONE question per supplied planned objective, using its exact objective_id. Do not invent or substitute objective IDs. Describe its testing_angle. Compare with ALL existing questions across documents; cosmetic changes, another patient age or synonyms do not create a distinct testing angle. Return zero questions for objectives where no useful new angle remains.',prompt,schema,16000)
+        if use_passages:
+            job.audit={**job.audit,'question_evidence_version':'pdf-passages-1','last_proposal':batch.model_dump()}
+            job.save(update_fields=['audit'])
         if len(batch.questions)>count:
             raise ValidationError('The generator returned more questions than requested.')
         candidates=[]
@@ -293,6 +308,7 @@ def run_job(job):
         old=list(Question.objects.exclude(status='retired').values_list('stem',flat=True))
         for draft in batch.questions:
             payload=draft.model_dump()
+            if use_passages:payload['references']=question_references(draft.references,evidence)
             if draft.objective_id not in target_map or draft.objective_id in attempted:
                 raise ValidationError('The generator returned an unplanned or repeated learning objective.')
             attempted.add(draft.objective_id)

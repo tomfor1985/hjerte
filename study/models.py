@@ -84,6 +84,18 @@ class SourcePage(models.Model):
         return f'{self.source.title} — page {self.number}'
 
 
+class PageReading(models.Model):
+    """Versioned PDF reading order; the original SourcePage.text is untouched."""
+    page = models.OneToOneField(SourcePage, on_delete=models.CASCADE, related_name='reading')
+    source_sha256 = models.CharField(max_length=64)
+    layout_sha256 = models.CharField(max_length=64)
+    text_sha256 = models.CharField(max_length=64)
+    extractor = models.CharField(max_length=80)
+    text = models.TextField()
+    passages = models.JSONField(default=list)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+
 class Chapter(models.Model):
     source = models.ForeignKey(Source, on_delete=models.CASCADE, related_name='chapters')
     topic = models.ForeignKey(Topic, on_delete=models.PROTECT, related_name='chapters')

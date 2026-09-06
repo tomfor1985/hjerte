@@ -100,6 +100,8 @@ def import_source(data, name, *, title='', kind='notes', year=None, doi='', url=
             source.file.save(digest[:16]+Path(name).suffix.lower(), ContentFile(data), save=False)
             source.save()
             SourcePage.objects.bulk_create([SourcePage(source=source, number=i, text=t) for i,t in enumerate(pages, 1)])
+            from .pdf_reading import prepare_source_reading
+            prepare_source_reading(source)
             setup_known_chapters(source)
             if source.kind == 'guideline' and not source.chapters.exists() and topic:
                 suggest_chapters(source, data, topic)
@@ -213,7 +215,19 @@ def validate_references(refs, allowed_page_ids=None):
         if allowed_page_ids is not None and page.pk not in allowed_page_ids:
             raise ValidationError('The model cited a page outside the supplied source context.')
         quote = normalize(ref.get('quote', ''))
-        if len(quote) < 30 or len(quote) > 900 or quote not in normalize(page.text):
+        content,minimum=page.text,30
+        if ref.get('reading_sha256'):
+            from .pdf_reading import reading_for
+            reading=reading_for(page)
+            if not reading or reading.text_sha256!=ref['reading_sha256']:
+                raise ValidationError('The reference reading view is missing or no longer matches its source.')
+            if '\ufffd' in quote:
+                raise ValidationError('The source passage contains unreadable PDF glyphs. Inspect the original or OCR before using it as evidence.')
+            if not any(p['start']==ref.get('passage_start') and p['end']==ref.get('passage_end') and
+                       quote==normalize(reading.text[p['start']:p['end']]) for p in reading.passages):
+                raise ValidationError('The reference is not an exact saved PDF passage.')
+            content,minimum=reading.text,1
+        if len(quote) < minimum or len(quote) > 900 or quote not in normalize(content):
             raise ValidationError('Supporting quotation does not match the cited source page.')
         if not str(ref.get('section', '')).strip():
             raise ValidationError('A guideline section must be specified.')

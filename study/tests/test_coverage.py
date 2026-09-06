@@ -21,6 +21,9 @@ class CoverageTests(TestCase):
     make_question=classmethod(StudyTests.make_question.__func__)
 
     def setUp(self):
+        # These workflow fixtures contain stored text, not an actual PDF file.
+        preparation=patch('study.mapping.prepare_source_reading')
+        preparation.start();self.addCleanup(preparation.stop)
         self.chapter.last_page=1; self.chapter.save()
         self.source.page_count=1; self.source.save()
         self.job=GenerationJob.objects.create(chapter=self.chapter,requested_by=self.user,count=1)
