@@ -1,7 +1,7 @@
 {% extends 'base.html' %}
 {% block content %}
 <header class="page-head"><div><p class="eyebrow">QUESTION STUDIO</p><h1>Build your study bank.</h1><p class="muted">{{ published }} published questions · {{ costs.unfinished }} saved drafts awaiting checks</p></div><a class="button secondary" href="/admin/study/question/">Edit questions</a></header>
-<nav class="studio-links" aria-label="Studio sections"><a href="#costs">Costs</a><a href="#completion-estimate">Coverage estimate</a><a href="#generate-questions">New questions</a><a href="#add-source">Add a source</a><a href="#history">Recent runs</a><a href="/studio/coverage/">Coverage planner →</a></nav>
+<nav class="studio-links" aria-label="Studio sections"><a href="#costs">Costs</a><a href="#completion-estimate">Coverage estimate</a><a href="#import-questions">Import questions</a><a href="#generate-questions">Generate via API</a><a href="#add-source">Add a source</a><a href="#history">Recent runs</a><a href="/studio/coverage/">Coverage planner →</a></nav>
 
 <section class="panel studio-next" aria-labelledby="next-heading">
   <p class="eyebrow">RECOMMENDED NEXT STEP</p><h2 id="next-heading">{{ next_step.title }}</h2><p>{{ next_step.description }}</p>
@@ -40,17 +40,18 @@
   </div>
 </section>
 
-{% include 'study/completion_estimate.html' %}
+<section class="section panel" id="completion-estimate"><h2>Coverage and cost</h2><p>Track the cost of checking imported drafts separately from generating questions through the API. A reliable full-library cost is not established yet; the number of questions needed depends on the remaining chapter coverage.</p><p><strong>Imported draft checks:</strong> {{ costs.imported.spent|floatformat:2 }} NOK · {{ costs.imported.published }} published{% if costs.imported.unit != None %} · {{ costs.imported.unit|floatformat:2 }} NOK per published question{% endif %}.</p><p><strong>Source-to-question API runs:</strong> {{ costs.source_flow.spent|floatformat:2 }} NOK · {{ costs.source_flow.published }} published{% if costs.source_flow.unit != None %} · {{ costs.source_flow.unit|floatformat:2 }} NOK per published question{% endif %}.</p><p class="small muted">Authoring outside the API uses your Codex allowance and is excluded from API cost. Chapter coverage is still partial; a question count does not establish complete syllabus coverage.</p><a href="/studio/coverage/">See confirmed learning objectives and remaining source gaps →</a></section>
+<section class="section panel" id="import-questions"><h2>Import authored questions</h2><p>Save questions prepared in Codex, with exact source passages. Importing does not use the API. An independent check must pass before publication; shared objectives and overlap are checked in the same request.</p><form method="post" enctype="multipart/form-data">{% csrf_token %}<input type="hidden" name="action" value="import_questions">{{ bundle_form.as_p }}<button class="button secondary">Save drafts · no API use</button></form></section>
 
 <section class="section panel" id="generate-questions" aria-labelledby="generate-heading">
-  <h2 id="generate-heading">Generate questions</h2><p class="muted">Use checked learning objectives to fill coverage gaps. Source checks run automatically.</p>
+  <h2 id="generate-heading">Generate questions</h2><p class="muted">Write questions and learning objectives together from the selected guideline. One independent check reviews evidence, explanations and overlap. No separate paid inventory is required.</p>
   <form method="post">{% csrf_token %}<input type="hidden" name="action" value="generate">{{ generate_form.non_field_errors }}
     <div class="studio-primary-fields"><div>{{ generate_form.chapter.as_field_group }}</div><div>{{ generate_form.count.as_field_group }}</div><div>{{ generate_form.spend_limit_nok.as_field_group }}</div></div>
     <details class="studio-options" {% if generate_form.errors %}open{% endif %}><summary>Models, notes & useful variants</summary>
-      <div class="form-grid"><div>{{ generate_form.generator_model.as_field_group }}</div><div>{{ generate_form.reviewer_model.as_field_group }}</div><div>{{ generate_form.strategy.as_field_group }}</div><div>{{ generate_form.notes_source.as_field_group }}</div></div>
+      <div class="form-grid"><div>{{ generate_form.workflow.as_field_group }}</div><div>{{ generate_form.generator_model.as_field_group }}</div><div>{{ generate_form.reviewer_model.as_field_group }}</div><div>{{ generate_form.strategy.as_field_group }}</div><div>{{ generate_form.notes_source.as_field_group }}</div></div>
     </details>
-    <button class="button primary" {% if not enabled %}disabled{% endif %}>Generate & verify</button>
-    <p class="small muted">Uses the existing approved allowance. Writing and the normal source check must both fit before a question group starts. An additional check is used only when more source context could resolve uncertainty.</p>
+    <p class="small muted">For long notes, the source workflow currently uses only the beginning of the selected file. Prepare the remaining notes in Codex or use the advanced coverage planner; this run does not establish complete note coverage.</p><button class="button primary" {% if not enabled %}disabled{% endif %}>Generate & verify</button>
+    <p class="small muted">Uses the existing approved allowance. Writing and the normal source check must both fit before a question group starts. Unsupported questions remain unpublished. Source selection favours pages with fewer existing questions; it does not claim complete coverage.</p>
   </form>
 </section>
 

@@ -84,12 +84,19 @@ def cost_summary(budget):
     totals['unfinished'] = sum(unfinished.values())
     totals['flows'] = []
     for current, label in ((True, 'New question flow'), (False, 'Earlier or mixed question runs')):
-        cohort = [job for job in jobs if job.kind == 'questions' and job.current_flow == current]
+        cohort = [job for job in jobs if job.kind == 'questions' and job.current_flow == current and job.audit.get('question_pipeline') not in ('authored-1','source-1')]
         cohort_calls = [call for job in cohort for call in by_job[job.pk]]
         published = sum(job.published for job in cohort)
         amounts = tally(cohort_calls)
         totals['flows'].append(dict(label=label, current=current, published=published,
             calls=len(cohort_calls), unit=amounts['spent'] / published if published else None, **amounts))
+    imported=[j for j in jobs if j.audit.get('question_pipeline')=='authored-1']
+    imported_calls=[c for j in imported for c in by_job[j.pk]]
+    amount=tally(imported_calls); published=sum(j.published for j in imported)
+    totals['imported']=dict(**amount,published=published,unit=amount['spent']/published if published else None)
+    direct=[j for j in jobs if j.audit.get('question_pipeline')=='source-1']
+    amounts=tally(c for j in direct for c in by_job[j.pk]); n=sum(j.published for j in direct)
+    totals['source_flow']=dict(**amounts,published=n,unit=amounts['spent']/n if n else None)
     totals['preparation'] = tally(call for job in jobs if job.kind in ('map', 'reconcile', 'link_questions') for call in by_job[job.pk])['spent']
     return totals
 
@@ -136,6 +143,8 @@ def next_step(summary, user):
         return dict(kind='held', title='Saved questions need attention', job=held,
             description=held.resume_reason, label='View this run', url=f'#job-{held.pk}')
     chapters = Chapter.objects.filter(source__in=Source.objects.for_study().filter(kind='guideline')).select_related('source').order_by('source_id', 'first_page')
+    if any(j.audit.get('question_pipeline') in ('authored-1','source-1') for j in jobs):
+        return dict(kind='import_questions',title='Add the next authored questions',description='Continue chapter by chapter in Codex, then import the drafts for independent checking. No separate API inventory is required.',label='Import authored questions',url='#import-questions')
     pending = LearningObjective.objects.filter(active=True, evidence__chapter__source__active=True).exclude(reconciliation_status='complete').order_by('pk').first()
     if pending:
         chapter = chapters.filter(objective_evidence__objective=pending).first()

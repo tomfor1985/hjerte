@@ -237,6 +237,8 @@ def source_file(request,source_id):
 
 @staff_member_required(login_url='/login/')
 def studio(request):
+    from .forms import QuestionBundleForm
+    bundle_form=QuestionBundleForm()
     import_form=ImportForm()
     generate_form=GenerateForm(initial={'chapter':request.GET.get('chapter')})
     if request.method=='POST':
@@ -264,12 +266,22 @@ def studio(request):
             except ValidationError as e:
                 messages.error(request,' '.join(e.messages))
             return redirect('studio')
+        elif request.POST.get('action')=='import_questions':
+            import json
+            from .question_import import import_bundle
+            bundle_form=QuestionBundleForm(request.POST,request.FILES)
+            if bundle_form.is_valid():
+                try:
+                    job,created=import_bundle(json.loads(bundle_form.cleaned_data['file'].read()),request.user,bundle_form.cleaned_data['spend_limit_nok'])
+                    messages.success(request,'Drafts saved without API use. Choose Finish saved questions to run the independent check.' if created else 'This bundle is already saved. No duplicate drafts or API calls were created.')
+                    return redirect('studio')
+                except (ValidationError,ValueError,UnicodeError) as e:bundle_form.add_error(None,str(e))
         elif request.POST.get('action')=='generate':
             generate_form=GenerateForm(request.POST)
             if generate_form.is_valid():
                 try:
                     data=generate_form.cleaned_data
-                    targets=plan_targets(data['chapter'],data['strategy'],data['count'],data['notes_source'])
+                    targets=plan_targets(data['chapter'],data['strategy'],data['count'],data['notes_source']) if data['workflow']=='compact-2' else [True]
                     if not targets:
                         raise ValidationError('No eligible learning objectives remain. This plan has reached its target or needs review.')
                 except ValidationError as e:
@@ -283,22 +295,22 @@ def studio(request):
                 elif GenerationJob.objects.filter(status__in=['queued','running']).count()>=5:
                     generate_form.add_error(None,'Let the existing generation jobs finish before adding more.')
                 else:
-                    GenerationJob.objects.create(requested_by=request.user,audit={'question_pipeline':'compact-2'},**generate_form.cleaned_data)
+                    values=generate_form.cleaned_data.copy()
+                    workflow=values.pop('workflow')
+                    GenerationJob.objects.create(requested_by=request.user,audit={'question_pipeline':workflow},**values)
                     messages.success(request,'Generation queued. Questions that pass source validation and an independent AI check are published automatically.')
                     return redirect('studio')
     budget,_=ApiBudget.objects.get_or_create(pk=1)
     from .studio_summary import cost_summary, next_step
     costs=cost_summary(budget)
     step=next_step(costs,request.user)
-    from .completion_estimate import completion_estimate
-    estimate=completion_estimate(costs)
     if not generate_form.is_bound and not request.GET.get('chapter') and step.get('kind')=='generate':
         generate_form.initial['chapter']=step['chapter'].pk
     jobs=costs['jobs'][:10]
     if step.get('job') and step['job'] not in jobs:
         jobs=[step['job'],*jobs]
     return render(request,'study/studio.html',{'import_form':import_form,'generate_form':generate_form,
-        'jobs':jobs,'costs':costs,'next_step':step,'estimate':estimate,
+        'jobs':jobs,'costs':costs,'next_step':step,'bundle_form':bundle_form,
         'budget':budget,'enabled':settings.AI_GENERATION_ENABLED and bool(settings.OPENAI_API_KEY),
         'published':Question.objects.filter(status='published').count(),'quarantined':Question.objects.filter(status='quarantined').count(),'nav':'studio'})
 

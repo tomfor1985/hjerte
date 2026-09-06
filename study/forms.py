@@ -57,6 +57,7 @@ class ModelPairForm(forms.Form):
 
 
 class GenerateForm(ModelPairForm):
+    workflow = forms.ChoiceField(choices=[('source-1','Source → questions → independent check'),('compact-2','Use previously mapped objectives')],initial='source-1',required=False,label='Workflow')
     spend_limit_nok = forms.DecimalField(min_value=1,max_value=200,decimal_places=2,required=False,initial=25,
         label='Maximum job spend (NOK)',help_text='Writing and the normal source check must both fit before a question group starts.')
     strategy = forms.ChoiceField(choices=[('coverage','Increase coverage'),('variants','Add useful variants')],initial='coverage',required=False,
@@ -71,6 +72,7 @@ class GenerateForm(ModelPairForm):
         data=super().clean()
         from decimal import Decimal
         data['spend_limit_nok']=data.get('spend_limit_nok') or Decimal('25')
+        data['workflow']=data.get('workflow') or 'source-1'
         data['strategy']=data.get('strategy') or 'coverage'
         chapter,notes=data.get('chapter'),data.get('notes_source')
         if chapter and notes and not notes.supporting_guidelines.filter(pk=chapter.source_id).exists():
@@ -115,3 +117,12 @@ class MappingForm(forms.Form):
         if data.get('retry_blocked') and not data.get('retry_reason','').strip():
             data['retry_reason']='User requested another bounded automatic source check.'
         return data
+
+
+class QuestionBundleForm(forms.Form):
+    file = forms.FileField(label='Authored question bundle (JSON)')
+    spend_limit_nok = forms.DecimalField(min_value=1,max_value=200,decimal_places=2,initial=4,label='Maximum review spend (NOK)')
+    def clean_file(self):
+        f=self.cleaned_data['file']
+        if f.size>100000:raise forms.ValidationError('Use a question bundle up to 100 KB.')
+        return f

@@ -226,9 +226,15 @@ def validate_references(refs, allowed_page_ids=None):
                 raise ValidationError('The reference reading view is missing or no longer matches its source.')
             if '\ufffd' in quote:
                 raise ValidationError('The source passage contains unreadable PDF glyphs. Inspect the original or OCR before using it as evidence.')
-            if not any(p['start']==ref.get('passage_start') and p['end']==ref.get('passage_end') and
-                       quote==normalize(reading.text[p['start']:p['end']]) for p in reading.passages):
-                raise ValidationError('The reference is not an exact saved PDF passage.')
+            start,end=ref.get('passage_start'),ref.get('passage_end')
+            parent_start=ref.get('parent_passage_start',start)
+            parent_end=ref.get('parent_passage_end',end)
+            if (any(type(n) is not int for n in (start,end,parent_start,parent_end)) or
+                    not parent_start<=start<end<=parent_end or
+                    not any(p['start']==parent_start and p['end']==parent_end for p in reading.passages) or
+                    quote!=normalize(reading.text[start:end]) or
+                    ('parent_passage_start' in ref and (len(quote)<30 or ref.get('quote')!=reading.text[start:end]))):
+                raise ValidationError('The reference is not an exact saved PDF passage or bounded excerpt.')
             content,minimum=reading.text,1
         if len(quote) < minimum or len(quote) > 900 or quote not in normalize(content):
             raise ValidationError('Supporting quotation does not match the cited source page.')

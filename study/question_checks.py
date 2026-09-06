@@ -27,7 +27,7 @@ def fingerprint(q):
 def candidate(q,index):
     refs=[]
     for r in q.references:
-        refs.append({'passage_id':f"{r['page_id']}:{r['passage_start']}",'section':r['section']}
+        refs.append({'passage_id':f"{r['page_id']}:{r.get('parent_passage_start',r['passage_start'])}",'section':r['section'],**({'quote':r['quote']} if 'parent_passage_start' in r else {})}
                     if r.get('passage_start') is not None else
                     {k:r[k] for k in ('page_id','section','quote')})
     return {'index':index,'stem':q.stem,'choices':q.choices,'objective_id':q.objective_id,

@@ -178,7 +178,7 @@ class StudioSummaryTests(TestCase):
             response=self.client.post('/studio/',{'action':'generate','chapter':self.chapter.pk,'count':'5','spend_limit_nok':'12.50'})
         self.assertEqual(response.status_code,302)
         job=GenerationJob.objects.get()
-        self.assertEqual(job.audit['question_pipeline'],'compact-2')
+        self.assertEqual(job.audit['question_pipeline'],'source-1')
         self.assertEqual(job.spend_limit_nok,Decimal('12.50'))
         self.assertEqual(ApiCall.objects.count(),0)
 

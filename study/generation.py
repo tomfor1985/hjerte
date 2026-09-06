@@ -324,5 +324,11 @@ def run_job(job):
     if job.kind == 'map':
         from .mapping import run_mapping_job
         return run_mapping_job(job)
+    if job.audit.get('question_pipeline') == 'source-1':
+        from .source_generation import run_source
+        return run_source(job, ask_model)
+    if job.audit.get('question_pipeline') == 'authored-1':
+        from .question_import import run_imported
+        return run_imported(job, ask_model)
     from .question_pipeline import run_questions
     return run_questions(job, ask_model)
