@@ -91,10 +91,12 @@ def cost_summary(budget):
         amounts = tally(cohort_calls)
         totals['flows'].append(dict(label=label, current=current, published=published,
             calls=len(cohort_calls), unit=amounts['spent'] / published if published else None, **amounts))
-    imported=[j for j in jobs if j.audit.get('question_pipeline')=='authored-1']
+    imported=[j for j in jobs if j.audit.get('question_pipeline')=='authored-1' and not j.audit.get('codex_review')]
     imported_calls=[c for j in imported for c in by_job[j.pk]]
     amount=tally(imported_calls); published=sum(j.published for j in imported)
     totals['imported']=dict(**amount,published=published,unit=amount['spent']/published if published else None)
+    offline=[j for j in jobs if j.audit.get('codex_review')]
+    totals['codex_reviewed']=sum(j.published for j in offline)
     direct=[j for j in jobs if j.audit.get('question_pipeline')=='source-1']
     amounts=tally(c for j in direct for c in by_job[j.pk]); n=sum(j.published for j in direct)
     totals['source_flow']=dict(**amounts,published=n,unit=amounts['spent']/n if n else None)
@@ -105,6 +107,8 @@ def cost_summary(budget):
 def resume_reason(job, user, active=False):
     if job.requested_by_id != user.pk:
         return 'Only the administrator who started this run can continue it.'
+    if job.audit.get('codex_review'):
+        return 'Continue the saved Codex review; this batch does not use API checking.'
     if job.kind != 'questions' or job.status != 'failed' or not job.unfinished_count:
         return 'No unfinished drafts to continue.'
     if job.has_unsettled_call or job.cost['missing_usage']:

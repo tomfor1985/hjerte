@@ -11,6 +11,8 @@ def queue_saved_questions(job_id,user):
         job=GenerationJob.objects.select_for_update().get(pk=job_id,requested_by=user,kind='questions',status='failed')
     except (GenerationJob.DoesNotExist,ValidationError,ValueError):
         raise ValidationError('Choose one of your stopped question jobs.')
+    if job.audit.get('codex_review'):
+        raise ValidationError('This batch is assigned to a separate Codex check; use its saved review workflow, not an API retry.')
     if job.calls.filter(state__in=['reserved','uncertain']).exists():
         raise ValidationError('An unsettled API call must be reconciled before continuing; it will not be retried automatically.')
     if job.spend_limit_nok is None:
