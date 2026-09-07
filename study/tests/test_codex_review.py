@@ -63,3 +63,27 @@ class CodexReviewTests(TestCase):
         self.assertEqual(job.published,0);self.assertEqual(job.quarantined,1)
         q=Question.objects.get(verification__provenance__job_id=str(job.pk))
         self.assertFalse(q.verification['publication_passed']);self.assertIn('codex_review',q.verification)
+
+    def test_revised_held_draft_preserves_previously_published_review_provenance(self):
+        second=deepcopy(self.payload['questions'][0])
+        second['stem']='Select the appropriate clinical action for a patient whose treatment causes marked adverse effects.'
+        second['objective_title']='Select individualized treatment when blood pressure therapy causes symptoms'
+        self.payload['questions'].append(second)
+        self.prepare()
+        v=deepcopy(self.result['verdicts'][0]);v.update(index=1,evidence_supports_answer=False)
+        self.result['verdicts'].append(v)
+        self.result['blind_answers'].append({'index':1,'best_answer':2,'reason':'Source evidence check needed.'})
+        job,_=apply_review(self.job.pk,self.user,self.result)
+        own=Question.objects.filter(verification__provenance__job_id=str(job.pk))
+        published=own.get(status='published');original=deepcopy(published.verification)
+        held=own.get(status='quarantined');held.explanation+=' Corrected qualifier.'
+        held.verification={**held.verification,'state':'awaiting_independent_review'};held.save()
+        job.status='failed';job.save(update_fields=['status'])
+        packet=export_review(job.pk,self.user,'author-session')
+        result={**self.result,'snapshot_sha256':packet['snapshot_sha256'],
+            'reviewer_session':'another-reviewer','blind_answers':self.result['blind_answers'][:1],
+            'verdicts':self.verdict().model_dump()['verdicts']}
+        job,_=apply_review(job.pk,self.user,result)
+        published.refresh_from_db();self.assertEqual(published.verification,original)
+        self.assertEqual(len(job.audit['codex_review_history']),1)
+        self.assertEqual(job.audit['codex_review_history'][0]['reviewer_session'],'separate-reviewer')

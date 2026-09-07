@@ -54,6 +54,8 @@ def export_review(job_id, user, author_session):
         existing = job.audit.get('codex_review', {})
         if existing.get('snapshot_sha256') == key and existing.get('author_session') != author_session:
             raise ValidationError('The recorded author session cannot be relabelled.')
+        if existing and existing.get('snapshot_sha256') != key:
+            job.audit = {**job.audit, 'codex_review_history': job.audit.get('codex_review_history', []) + [existing]}
         job.audit = {**job.audit, 'codex_review': {'snapshot_sha256': key,
             'author_session': author_session, 'prepared_at': timezone.now().isoformat()}}
         job.message = 'Saved for a separate Codex source check; no API request queued.'
@@ -103,6 +105,8 @@ def apply_review(job_id, user, document):
         if digest(captured_payload(job, body, kwargs.get('images', []))) != saved['snapshot_sha256']:
             raise ValidationError('Drafts, sources, question bank or objectives changed; export and review again.')
         return review
+    reviewed_ids = list(Question.objects.filter(verification__provenance__job_id=str(job.pk), status='quarantined',
+        verification__state__in=['awaiting_independent_review', 'checked_pending_publication']).values_list('pk', flat=True))
     job.reviewer_model = 'Codex independent review'
     run_imported(job, recorded)
     provenance = {**saved, 'reviewer_session': reviewer, 'result_sha256': result_hash,
@@ -111,7 +115,7 @@ def apply_review(job_id, user, document):
     job.status = 'complete'; job.finished_at = timezone.now()
     job.message = f'{job.published} published; {job.quarantined} held. Separate Codex check; no API use.'
     job.save(update_fields=['audit', 'status', 'finished_at', 'message', 'reviewer_model'])
-    for q in Question.objects.filter(verification__provenance__job_id=str(job.pk)):
+    for q in Question.objects.filter(pk__in=reviewed_ids):
         q.verification = {**q.verification, 'codex_review': {'snapshot_sha256': saved['snapshot_sha256'],
             'result_sha256': result_hash, 'author_session': saved['author_session'], 'reviewer_session': reviewer}}
         q.save(update_fields=['verification'])
